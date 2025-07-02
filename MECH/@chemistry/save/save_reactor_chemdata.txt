@@ -1,0 +1,1292 @@
+function [list,indx] = consistency(obj,list,indx)
+% [list,indx] = consistency(obj,list,indx)
+% checks if a species from the list is in the inital mole fractions. These
+% species can not removed from the mechanism and will be removed from the
+% list
+
+speciesList = selectSpeciesFromList(obj.initalMoleFractions);
+
+
+function speciesList = selectSpeciesFromList(str) 
+    % extracts species names from the (user input) inital mole fractions
+    % here we use it for selecting the three body from their definiton
+    % sequence what is quite similar to the cantera systax of the mole
+    % fractions
+    speciesList = [];
+    k = 1; % zaehler fuer die position
+    in = true;
+    species = [];
+    for i=1:length(str)        
+        if strcmp(str(i),':')
+            in = false; 
+            speciesList{k} = species;
+            species = [];
+            k = k+1; % next  
+        elseif isLetter(str(i))
+            in = true;
+        end
+        if allowedChar(str(i)) && in
+            species = [species,str(i)];             
+        end                         
+    end
+    end
+
+endfunction blocks = indexCtiFile(ctiFile)
+% blocks = indexCtiFile(ctiFile)
+% indexes a cti file
+% 
+% blocks.nlines  : no of lines;
+% blocks.species : startline of species block
+% blocks.ideal_gas :  startline ideal_gas_block
+% blocks.reactions :  startline of a reaction_block
+% blocks.three_bodies :  startline of thethree_body_reaction_block
+% blocks.falloffs     :  startlinefalloff_reaction_block
+% blocks.units        :  startline of the unit_block
+
+fid = fopen(ctiFile,'r');
+nline = 0;
+ideal_gas_block = [];
+species_block = [];
+reaction_block = [];
+falloff_reaction_block = [];
+three_body_reaction_block = [];
+unit_block = [];
+reaction_index = [];
+while 1
+    cline = fgetl(fid);     %read line
+    nline = nline+1;            % count line
+    
+    % identify the keywords and the associate blocks
+    if length(cline)>=10 && strcmp(cline(1:9),'ideal_gas')
+        ideal_gas_block = [ideal_gas_block,nline];
+    elseif length(cline)>=7 && strcmp(cline(1:7),'species')
+        species_block = [species_block,nline];
+    elseif length(cline)>=8 && strcmp(cline(1:8),'reaction')
+        reaction_block = [reaction_block,nline];
+        reaction_index = [reaction_index,nline];
+    elseif length(cline)>=16 && strcmp(cline(1:16),'falloff_reaction')
+        falloff_reaction_block = [falloff_reaction_block,nline];
+        reaction_index = [reaction_index,nline];
+    elseif length(cline)>=19 && strcmp(cline(1:19),'three_body_reaction')
+        three_body_reaction_block = [three_body_reaction_block,nline];
+        reaction_index = [reaction_index,nline];
+    elseif length(cline)>=5 && strcmp(cline(1:5),'units')
+        unit_block = nline;
+    end
+    
+    if ~ischar(cline), 
+        err = fclose(fid);
+        break,
+    end
+end
+blocks.nlines = nline-1;
+blocks.species = species_block;
+blocks.nspecies = length(blocks.species);
+blocks.ideal_gas = ideal_gas_block;
+blocks.reaction_index = reaction_index; 
+blocks.reactions = reaction_block;
+blocks.three_bodies = three_body_reaction_block;
+blocks.falloffs = falloff_reaction_block;
+blocks.units = unit_block;
+blocks.nreactions = length(blocks.reactions)+length(blocks.three_bodies)+length(blocks.falloffs);
+
+endfunction b = isDeadReaction(reactionLine,deads)
+% b= isDeadReaction(reactionLine) 
+%   decides if an reaction is dead, i.e. if it contains a dead species
+b = false;
+species = chemistry.selectSpeciesFromList(reactionLine);
+for k = 1:length(deads)
+    for l = 1:length(species)
+        if strcmp(deads{k},species{l})
+            b = true;
+            return
+        end
+    end
+end
+            
+
+end
+
+function varargout = isInList(list,str)
+% bool = isInList(list,str) returns true if the 
+% string str ist found in the cell array list. Case sentitive! 
+b = false;
+for kk = 1:length(list)
+    b = strcmp(list{kk},str);
+    if b        
+        break
+    end
+end
+switch nargout
+    case 1
+        varargout{1} = b;
+    case 2
+        varargout{1} = b;
+        varargout{2} = kk;
+    otherwise
+        varargout = [];
+end
+endfunction [b,varargout] = isInListI(list,str)
+% bool = isInList(list,str) returns true if the 
+% string str ist found in the cell array list. NOT case sensitive!!!
+b = false;
+for kk = 1:length(list)
+    b = strcmpi(list{kk},str);
+    if b        
+        break
+    end
+end
+switch nargout
+    case {0 1}
+        % b = b :-)
+    case 2       
+        varargout{1} = kk;
+    otherwise
+        error('isInListI:WrongNumberOutputs','The number of outputs can be one or two.')
+end
+endfunction labeler(z_label);
+% macht nichts weiter, als
+% die z-achse mit zlabel  und
+% die x und y achse mit x_1 bzw x_2 zu beschriften
+
+grid on
+axis on
+xlabel('x_{1}','FontSize',24);
+ylabel('x_{2}','FontSize',24)
+zlabel(z_label,'FontSize',24);
+function fractionsOut= mixFractions(fractions1,fractions2,a)
+% This function mix the fractions given by the firts two arguments,
+% asssumed as a valid fractions strings.
+% The third argument is the  ratio phi. We put 1/phi of the mixture in
+% the first argument to the initial mass fractions in
+% obj.initialMassFraction
+% (C) 2011 by Uwe Pruefert for VIRTUHCON
+if a>1 || a <0
+    error('matlab:batchReactor:friends:mixFractions',...
+        'Wrong value for mixing ratio: must be between 0 and 1.')
+end
+speciesListOne = getSpeciesFromInitialFractions(fractions1);
+fractionsListOne = a * getMoleFractionsFromInitialFractions(fractions1)/...
+    sum(getMoleFractionsFromInitialFractions(fractions1));
+
+speciesListTwo = getSpeciesFromInitialFractions(fractions2);
+fractionsListTwo =  (1-a) * getMoleFractionsFromInitialFractions(fractions2)/...
+    sum(getMoleFractionsFromInitialFractions(fractions2));
+
+% mix the species and the fractions
+
+newSpecies = logical(1:length(speciesListTwo));
+
+for k = 1:length(speciesListOne)    
+    for l = 1:length(speciesListTwo)        
+        if strcmp(speciesListOne{k},speciesListTwo{l})            
+            fractionsListOne(k) =  fractionsListOne(k) + fractionsListTwo(l);
+            newSpecies(l) = false;           
+            break;        
+        end      
+    end
+end
+
+% new species is in the end a logical vector where true is when the species
+% name is not fpount in the initial mass fractions of batchReactor object
+
+speciesListOne = [speciesListOne speciesListTwo(newSpecies)];
+fractionsListOne = [fractionsListOne fractionsListTwo(newSpecies)];
+
+fractionsOut  = vector2CanteraString(speciesListOne,fractionsListOne);
+
+
+endfunction newEfficiencies = removeDeadFromEfficiencies(oldEfficiencies,deads)
+%
+% scans efficiencies list and remove species in dead
+l = 1;m=1;remove = false;
+startName = false;
+for k = 26:length(oldEfficiencies)
+    if isLetter(oldEfficiencies(k)) && ~startName
+        startSpeciesName(l) = k;
+        startName = true;
+        l = l+1;
+    elseif strcmp(oldEfficiencies(k),':')
+        endSpeciesName(m) = k-1;
+        startName = false;
+        m = m+1;
+    end
+end
+endSpecies = startSpeciesName(2:end)-3;
+endSpecies(length(startSpeciesName))=length(oldEfficiencies)-3;
+
+if ~(length(startSpeciesName)==length(endSpeciesName))
+    MException('chemistry:WrongLengthArguments',...
+        'The format of the input file may be corrupted.').throw;
+end
+newEfficiencies = oldEfficiencies(1:25) ;
+for k = 1:length(startSpeciesName),
+    for l = 1:length(deads)  
+        if strcmp(oldEfficiencies(startSpeciesName(k):endSpeciesName(k)),deads{l}),
+            remove = true;           
+            break
+        else
+            remove = false;
+        end
+    end
+    if ~remove
+        newEfficiencies = [newEfficiencies,' ',oldEfficiencies(startSpeciesName(k):endSpecies(k)),' ' ];
+    end
+end
+newEfficiencies = [newEfficiencies,'")']  ;
+function b = isLetter(charSpec)
+    % is it a  letter character (to define a species name, the first must
+    % be a letter, 20H is NOT a well formed species name
+    b = (double(charSpec)<91 && double(charSpec)>64) ||...% capitals A...Z
+                (double(charSpec)<123 && double(charSpec)>96);  % lowercasses a..z
+end    
+end
+
+function nline = removeDeadSpeciesFromIdealGasBlock(reactionLine,deads)
+%nline = removeDeadSpeciesFromIdealGasBlock(reactionLine,deads)
+%   We remove the species from the dead list and write back a new species
+%   definition line
+
+% extract the species from the line after the keyword
+species = chemistry.scanSpeciesList(reactionLine(20:end));
+
+newSpecies=[];
+ 
+ 
+for l = 1:length(species)
+    for m = 1:length(deads)
+        if strcmp(species{l},deads{m})
+           species{l} = '';         
+        else
+            %fprintf(['remove species ',species{l},' from list\n'])
+        end
+    end
+end
+l = 1;
+for k = 1:length(species)
+    if ~isempty(species{k})
+        newSpecies{l}=species{k};
+        l = l+1;
+    end
+end
+newSpeciesString = [];
+for k = 1:length(newSpecies)
+    newSpeciesString = [newSpeciesString,' ',newSpecies{k},' '];
+end
+% we add the new line to the first 19 entries in the old line, i.e we write
+% " species" keyword and preserve the structure of the file...
+% we also have to set the block closing '""",'
+if strcmp(reactionLine(end-3:end),'""",')
+    nline = [reactionLine(1:18),newSpeciesString,'""",'];
+elseif strcmp(reactionLine(7:13),'species')
+    
+    nline = [reactionLine(1:19),newSpeciesString];
+else
+    
+    nline = [reactionLine(1:19),newSpeciesString];
+end
+end
+
+function removeReactionsCK(mechFileIn,mechFileOut,varargin)
+% removeReactionsCK(mechFileIn,mechFileOut[,species_list])
+% remove all reactions that contains the species in species_list.
+% species_list must be a CELL array, e.g. {'H2' 'CO2'} or a species object.
+% If no species_list is given, removeReactions removes ALL reactions from 
+% the mechanism.
+% (c) U. Pruefert (VIRTUHCON) 2011.
+
+% check for stupid inputs/output file declaration
+if strcmp(mechFileIn,mechFileOut)
+    error('removeDeadSpecies:SameInputOutputFile','The input and the output files are the same, are you sure? However, it is not allowed. Bye!')
+end
+
+% try to open the files
+[fidMech,mesg] = fopen(mechFileIn,'r');
+if fidMech < 0 
+    fprintf(mesg)
+end 
+[fidNewMech,mesg] = fopen(mechFileOut,'w');
+if fidNewMech < 0 
+    fprintf(mesg)
+end
+
+% some comment add to the mechanism file
+fprintf(fidNewMech,['! This is a reduced mechanism based on ',mechFileIn,' \n']);
+fprintf(fidNewMech,'! The removing process is performed by removeReactionsCK\n');
+fprintf(fidNewMech,'! \t\t (c) U. Pruefert 2011.\n!\n');
+
+if isempty(varargin)
+    all = true;
+else
+    if isa(varargin{1},'cell')
+        deadSpeciesNamesList = varargin{1}; 
+    elseif isa(varargin{1},'species')
+        deadSpeciesNamesList = varargin{1}.names;
+    else
+        error('removeReactionsCK:wrongArgument','The optinal argument must be a CELL array containing the names of species or a SPECIES object')
+    end
+    all = false;
+    fprintf(fidNewMech,'! All reactions associated with the following species will be deleted:\n');
+    listTheSpecies(fidNewMech,deadSpeciesNamesList)
+end
+inReactions = false;
+toRemove = true;
+nOfReactions = 0;nOfRemovedReactions = 0;
+while 1 % loop over all lines
+    cline = fgetl(fidMech); 
+    if ~ischar(cline),         
+        break,
+    end 
+    if (length(cline)>=4) && (strcmp(cline(1:4),'REAC')||strcmp(cline(1:4),'reac'))
+        % reactions block
+        inReactions = true;
+        fprintf(fidNewMech,[cline,'\n']);
+    elseif (length(cline)>=3) && (strcmp(cline(1:3),'END')||strcmp(cline(1:3),'end')) 
+        % exit all blocks         
+        inReactions = false;
+        
+        fprintf(fidNewMech,[cline,'\n']);
+    else
+        % now, we have to work...
+        % Definitely, we are in a non keyword line or a (regular) comment
+        % line
+        if inReactions
+            % first we look for a line that defines a reaction.
+            % if a reaction contains a to-removed-species, all lines can be
+            % removed untill we found the next reaction
+            if isReactionLine(cline)
+                if ~all
+                    toRemove = false;
+                end
+                nOfReactions = nOfReactions + 1;
+            end
+            if ~toRemove
+                if containsDeadSpecies(cline,deadSpeciesNamesList)
+                    toRemove = true;
+                    nOfRemovedReactions = nOfRemovedReactions + 1;
+                end
+            end
+            if ~toRemove                
+                fprintf(fidNewMech,[cline,'\n']);
+            end
+        else
+            fprintf(fidNewMech,[cline,'\n']);            
+        end
+    end   
+end
+
+% we close all files
+err = fclose(fidNewMech);
+if err < 0
+    fprintf('An error during closing the file is occured. Please check the file names etc.\n')
+end
+err = fclose(fidMech);
+if err < 0
+    fprintf('An error during closing the file is occured. Please check the file names etc.\n')
+end
+
+
+    function b = isReactionLine(cline)
+        b = false;
+        for l = 1:length(cline)-1;
+            % if we found a comment mark, we can abort the procedure
+            if strcmp(cline(l),'!')
+                return
+            end
+            % a reaction line contains "=" (within "=>", "<=", "<=>", or "=" )
+            b = strcmp(cline(l),'=');
+            if b 
+                return                          
+            end
+        end
+    end
+
+% we check, if a line contains a species
+    function b = containsDeadSpecies(cline,deadSpeciesNamesList)
+        b = false;
+        for k = 1:length(deadSpeciesNamesList)
+            lngthSpecName = length(deadSpeciesNamesList{k});
+            for l = 1:length(cline)-lngthSpecName-1;
+                foundSpec = strcmp(cline(l:l+lngthSpecName-1),deadSpeciesNamesList{k});
+                b = isLeft(cline,l) && isRight(cline,l) && foundSpec ; 
+                if b 
+                    return
+                end               
+            end
+        end 
+        % local local functions for identifying species by name
+        function b = isLeft(cline,l)
+            % checks if a species string is a whole species name or only a part
+            % of a species name: left of the name...
+            b = (l==1) || ((l>1) && (strcmp(cline(l-1),'+') ||  strcmp(cline(l-1),'>')||...
+                strcmp(cline(l-1),'=') || (double(cline(l-1))>48 && double(cline(l-1))< 58) )...
+                 &&...
+                ((l>=2)||(strcmp(cline(l-2),'+') ||  strcmp(cline(l-2),'>') || strcmp(cline(l-2),'=')))); 
+        end
+        % of a species name: right of the name...
+        function b = isRight(cline,l)
+            b = ( strcmp(cline(l+lngthSpecName),' ') ||  strcmp(cline(l+lngthSpecName),'<') ||...
+                strcmp(cline(l+lngthSpecName),'+')||  strcmp(cline(l+lngthSpecName),'=') ||...
+                strcmp(cline(l+lngthSpecName:l+lngthSpecName+1),'(+')) ; 
+        end
+    end
+
+% helper function that lists the species
+    function listTheSpecies(fid,list)
+        m = ceil(length(list)/4);
+        r = length(list);
+        n = 1;
+        fprintf(fid,'!\n');
+        for k = 1:m
+            fprintf(fid,'!');
+            for l = 1:4,
+                if n <= r
+                    fprintf(fid,['\t',list{n}]);
+                    n = n+1;
+                end
+            end
+            fprintf(fid,'\n');
+        end
+        fprintf(fid,'! \n');
+    end
+endfunction removeReactionsCTI(mechFileIn,mechFileOut,varargin)
+
+if strcmp(mechFileIn,mechFileOut)
+    error('removeReactionsCTI:SameInputOutputFile','The input and the output files are the same, are you sure? However, it is not allowed. Bye!')
+end
+
+blocks = indexCtiFile(mechFileIn);
+
+% Check whether any index array is empty
+% If there are no reactions, three-bodies or falloffs, we set the line to 1e5.
+% Then the mechanism is already a non-reaction mechanism and we will copy
+% it. reactionsStartAt is now larger then the number of lines.
+if isempty(blocks.reactions)
+    reactions = 1e5;
+else
+    reactions = blocks.reactions;
+end
+if isempty(blocks.three_bodies)
+    three_bodies = 1e5;
+else
+    three_bodies = blocks.three_bodies;
+end
+if isempty(blocks.falloffs)
+    falloffs = 1e5;    
+else
+    falloffs = blocks.falloffs;
+end
+
+% a boolean for swithcind all <=> single reaction remove
+removeSingleReactions = nargin>2;
+isToRemove = [];
+if removeSingleReactions
+    indexSet = varargin{1};
+    % create the vector of lines to be removed
+    allReactions = sort([blocks.reactions blocks.three_bodies blocks.falloffs]);
+    
+    for k = 1:length(indexSet)
+        if indexSet(k)+1>length(allReactions)
+            isToRemove = [isToRemove allReactions(indexSet(k)):allReactions(indexSet(k))+6];
+        else
+            isToRemove = [isToRemove allReactions(indexSet(k)):allReactions(indexSet(k)+1)-1];
+        end
+    end
+end
+
+
+
+reactionsStartAt = min([reactions(1) ...
+    three_bodies(1) falloffs(1) ]);
+
+% tries to open the files
+[fidMech,mesg] = fopen(mechFileIn,'r');
+if fidMech < 0 
+    fprintf(mesg)
+end 
+[fidNewMech,mesg] = fopen(mechFileOut,'w');
+if fidNewMech < 0 
+    fprintf(mesg)
+end
+
+% some comment add to the mechanism file
+fprintf(fidNewMech,['# This is a reduced mechanism based on ',mechFileIn,' \n']);
+fprintf(fidNewMech,'# The removing process is performed by removeReactionsCTI\n');
+fprintf(fidNewMech,'# \t\t (c) U. Pruefert 2011.\n\n');
+
+nLine = 0;
+
+while 1 % loop over all lines
+    cline = fgetl(fidMech); 
+    nLine = nLine + 1;
+    if ~ischar(cline)
+        break
+    end
+    if (~ischar(cline)||nLine==reactionsStartAt-1)&&~removeSingleReactions,         
+        break,
+    elseif isIn(nLine,isToRemove)
+        % do nothing...
+    else
+        fprintf(fidNewMech,[cline,'\n']);
+    end
+end
+
+% we close all files
+err = fclose(fidNewMech);
+if err < 0
+    fprintf('An error during closing the file is occured. Please check the file names etc.\n')
+end
+err = fclose(fidMech);
+if err < 0
+    fprintf('An error during closing the file is occured. Please check the file names etc.\n')
+end
+
+    function b = isIn(x,y)
+        % true if x is in y
+        if isempty(y)
+            b = false;
+            return
+        end
+        for kk = 1:length(y)
+            b = x==y(kk);
+            if b
+                break
+            end
+        end
+    end
+
+endfunction   removeSpecies(obj,varargin)
+%  removeSpecies(mechFileOut,deadSpeciesIndexList)
+%  removeSpecies(baseMech,mechFileOut,deadSpeciesIndexList,deadSpeciesNamesList)
+%   removes species given by deadSpeciesIndexList and deadSpeciesNamesList
+%   from a mechanism file. If baseMech is a cti file, removeSpeciesCTI
+%   will used, is mechFIleIn a inp-file, removeSpeciesCK will be used. The
+%   type of the format of the input file is detected by the ending inp or
+%   cti.
+%   New Version.
+%   (C) 2013 Uwe Prüfert 
+
+switch nargin
+    case 3
+        baseMech = obj.mechanism;        
+        mechFileOut = varargin{1};
+        if strcmp(class(varargin{2}),'cell')
+             deadSpeciesNamesList = varargin{2};
+             deadSpeciesIndexList = obj.getSpeciesIndexByName(...
+                 deadSpeciesNamesList);
+        else
+            deadSpeciesIndexList = varargin{2}
+            deadSpeciesNamesList = obj.speciesNames(...
+                deadSpeciesIndexList);
+        end
+    case 5
+        baseMech =  varargin{1};       
+        mechFileOut = varargin{2};
+        deadSpeciesIndexList = varargin{3};
+        deadSpeciesNamesList = varargin{4};
+    otherwise
+end
+
+
+     
+% identify the input file type
+dotloc = max(strfind(baseMech,'.'));
+if dotloc > 1
+   filetype = baseMech(dotloc+1:end);
+end
+switch filetype
+    case 'inp'
+        % call CK version
+        chemistry.removeSpeciesCK(baseMech,mechFileOut,...
+            deadSpeciesNamesList)
+    case 'cti'
+        % call CTI version
+        chemistry.removeSpeciesCTI(baseMech,mechFileOut,...
+            deadSpeciesIndexList,deadSpeciesNamesList)
+    otherwise
+        error('removeSpecies:wrongFileType','Input-Output can be *.inp or *.cti')
+end
+
+end
+
+function removeSpeciesCK(mechFileIn,mechFileOut,varargin)
+%removeSpeciesCK(mechFileIn,mechFileOut,deadSpeciesNamesList)
+% This is the CHEMKIN Version of removeSpecies.
+%   Removes the species (and Reactions) defined in 
+%   deadSpeciesNamesList from mechFileIn, the resulting mechanism will be
+%   written in mechFileOut. 
+%   The input arguments deadSpeciesNamesList must be
+%   either a CELL array containing the names of the species, e.g. {'OH' 'CH3'}
+%   or a species object  
+%   (c) U. Pruefert (VIRTUHCON) 2011.
+ 
+
+
+% check for stupid inputs/output file declaration
+if strcmp(mechFileIn,mechFileOut)
+    error('removeDeadSpecies:SameInputOutputFile','The input and the output files are the same, are you sure? However, it is not allowed. Bye!')
+end
+
+if isa(varargin{1},'cell')
+    deadSpeciesNamesList = varargin{1}; 
+elseif isa(varargin{1},'species')
+    deadSpeciesNamesList = varargin{1}.names;
+else
+    error('removeSpeciesCK:wrongArgument','The optinal argument must be a CELL array containing the names of species or a SPECIES object')
+end
+
+
+% try to open the files
+[fidMech,mesg] = fopen(mechFileIn,'r');
+if fidMech < 0 
+    fprintf(mesg)
+end 
+[fidNewMech,mesg] = fopen(mechFileOut,'w');
+if fidNewMech < 0 
+    fprintf(mesg)
+end
+
+% initalize the line counter
+nLines = 0;
+nOfReactions = 0;
+nOfRemovedReactions = 0;
+
+% some important counters
+inElements = false;
+inSpecies = false;
+inThermo = false;
+inReactions = false;
+linesJetToRemove = 0;
+
+% write some comments in the mechanism file
+fprintf(fidNewMech,['! This is a reduced mechanism based on ',mechFileIn,' \n']);
+fprintf(fidNewMech,'! The following species are deleted:\n');
+listTheSpecies(fidNewMech,deadSpeciesNamesList)
+fprintf(fidNewMech,'! Also, all reactions that contain species listed above are removed.\n');
+fprintf(fidNewMech,'! The removing process is performed by removeSpeciesCK\n');
+fprintf(fidNewMech,'! \t\t (c) U. Pruefert 2011.\n!\n');
+
+
+
+while 1 % loop over all lines
+    cline = fgetl(fidMech); 
+    % because we use a fixed condition in our while loop, we need a loop
+    % break statement: if the next "line"contains NO character, it can only
+    % be a EOF
+    if ~ischar(cline),         
+        break,
+    end  
+    nLines = nLines + 1;
+    if (length(cline)>=1) && strcmp(cline(1),'!')
+        % comment line, write it in the output or not???
+        fprintf(fidNewMech,[cline,'\n']);
+    elseif (length(cline)>=4) && (strcmp(cline(1:4),'ELEM')||strcmp(cline(1:4),'elem')) 
+        inElements = true;
+        fprintf(fidNewMech,[cline,'\n']);
+    elseif (length(cline)>=4) && (strcmp(cline(1:4),'SPEC')||strcmp(cline(1:4),'spec')) 
+        % species block: Remove all species from the to-remove-list
+        inSpecies = true;
+        fprintf(fidNewMech,[cline,'\n']);
+    elseif (length(cline)>=4) && (strcmp(cline(1:4),'THER')||strcmp(cline(1:4),'ther')) 
+        inThermo = true;
+        fprintf(fidNewMech,[cline,'\n']);
+    elseif (length(cline)>=4) && (strcmp(cline(1:4),'REAC')||strcmp(cline(1:4),'reac'))
+        % reactions block
+        inReactions = true;
+        fprintf(fidNewMech,[cline,'\n']);
+    elseif (length(cline)>=3) && (strcmp(cline(1:3),'END')||strcmp(cline(1:3),'end')) 
+        % exit al block
+        inSpecies = false;
+        inThermo = false;
+        inReactions = false;
+        inElements = false;
+        fprintf(fidNewMech,[cline,'\n']);
+    else
+        % now, we have to work...
+        % Definitely, we are in a non keyword line or a (regular) comment
+        % line
+        if inElements 
+            % only to copy the element block 
+            fprintf(fidNewMech,[cline,'\n']);            
+        elseif inSpecies
+            % remove all species from the line and fill it with blanks
+            fprintf(fidNewMech,[removeSpeciesFromLine(cline,deadSpeciesNamesList),'\n']);   
+        elseif inThermo
+            % a thermo block has exactly 4 lines. If we identify a to-rmove
+            %-species in a block, the next three lines are also be removed
+            if thermoBlockToRemove(cline,deadSpeciesNamesList)
+                linesJetToRemove = 3;
+            elseif linesJetToRemove > 0               
+                linesJetToRemove = linesJetToRemove - 1;
+            else
+                fprintf(fidNewMech,[cline,'\n']);
+            end
+        elseif inReactions
+            % first we look for a line that defines a reaction.
+            % if a reaction contains a to-removed-species, all lines can be
+            % removed untill we found the next reaction
+            if isReactionLine(cline)
+                toRemove = false;
+                nOfReactions = nOfReactions + 1;
+            end
+            if ~toRemove
+                if containsDeadSpecies(cline,deadSpeciesNamesList)
+                    toRemove = true;
+                    nOfRemovedReactions = nOfRemovedReactions + 1;
+                end
+            end
+            if ~toRemove
+                % maybe we must remove species from the efficiencies line
+                if isEfficienciesLine(cline) && efficienciesContainsDeadSpecies(cline,deadSpeciesNamesList)
+                    cline = removeSpeciesFromEfficiencies(cline,deadSpeciesNamesList);                   
+                end
+                fprintf(fidNewMech,[cline,'\n']);
+            end
+        end
+    end
+    
+      
+end
+
+% we close all files
+fclose('all');
+
+ 
+
+% some statitics
+fprintf('\tremoveSpeciesCK: I removed the following ') 
+fprintf([num2str(length(deadSpeciesNamesList)),' species:\n']);
+listTheSpecies(1,deadSpeciesNamesList)
+fprintf(['\n and\n ',num2str(nOfRemovedReactions),' of ',num2str(nOfReactions),' reactions.\n']);
+
+
+% And now: some internal functions
+% we replace the to-removed-species in the species block by blanks
+    function cline = removeSpeciesFromLine(cline,deadSpeciesNamesList)
+        for k = 1:length(deadSpeciesNamesList)
+            lngthSpecName = length(deadSpeciesNamesList{k});
+            for l = 1:length(cline)-lngthSpecName + 1;                
+                foundSpec = strcmp(cline(l:l+lngthSpecName-1),deadSpeciesNamesList{k});
+                if (((l+lngthSpecName)>length(cline) ||  strcmp(cline(l+lngthSpecName),' ')) && foundSpec)...
+                        && ((l==1 ||  strcmp(cline(l-1),' ')) && foundSpec)
+                    cline(l:l+lngthSpecName-1) = blank(lngthSpecName);
+                end                 
+            end
+        end        
+    end
+
+% we identify the species in the thermo definition line
+    function b = thermoBlockToRemove(cline,deadSpeciesNamesList)
+        b = false;
+        for k = 1:length(deadSpeciesNamesList)
+            lngthSpecName = length(deadSpeciesNamesList{k});
+            b = strcmp(cline(1:lngthSpecName),deadSpeciesNamesList{k})&&strcmp(cline(lngthSpecName+1),' ');
+            if b               
+                return
+            end
+            
+        end         
+    end
+
+% we check if a line is a reaction definition line
+    function b = isReactionLine(cline)
+        b = false;
+        for l = 1:length(cline)-1;
+            % if we found a comment mark, we can abort the procedure
+            if strcmp(cline(l),'!')
+                return
+            end
+            % a reaction line contains "=" (within "=>", "<=", "<=>", or "=" )
+            b = strcmp(cline(l),'=');
+            if b 
+                return                          
+            end
+        end
+    end
+
+% we check, if a line contains a species
+    function b = containsDeadSpecies(cline,deadSpeciesNamesList)
+        b = false;
+        for k = 1:length(deadSpeciesNamesList)
+            lngthSpecName = length(deadSpeciesNamesList{k});
+            for l = 1:length(cline)-lngthSpecName-1;
+                foundSpec = strcmp(cline(l:l+lngthSpecName-1),deadSpeciesNamesList{k});
+                b = isLeft(cline,l) && isRight(cline,l) && foundSpec ; 
+                if b 
+                    return
+                end               
+            end
+        end 
+        % local functions for identifying species by name
+        function b = isLeft(cline,l)
+            % checks if a species string is a whole species name or only a part
+            % of a species name: left of the name...
+            b = (l==1) || ((l>1) && (strcmp(cline(l-1),'+') ||  strcmp(cline(l-1),'>')||...
+                strcmp(cline(l-1),'=') || (double(cline(l-1))>48 && double(cline(l-1))< 58) )...
+                 &&...
+                ((l>=2)||(strcmp(cline(l-2),'+') ||  strcmp(cline(l-2),'>') || strcmp(cline(l-2),'=')))); 
+        end
+        % of a species name: right of the name can be a blank, "<", "+" "=" "(+", or "/"...
+        function b = isRight(cline,l)
+            b = ( strcmp(cline(l+lngthSpecName),' ') ||  strcmp(cline(l+lngthSpecName),'<') ||...
+                strcmp(cline(l+lngthSpecName),'+')||  strcmp(cline(l+lngthSpecName),'=') ||...
+                strcmp(cline(l+lngthSpecName:l+lngthSpecName+1),'(+') ||...
+                strcmp(cline(l+lngthSpecName),'/')) ; 
+        end
+    end
+
+% helper function that lists the species
+    function listTheSpecies(fid,list)
+        m = ceil(length(list)/4);
+        r = length(list);
+        n = 1;
+        fprintf(fid,'!\n');
+        for k = 1:m
+            fprintf(fid,'!');
+            for l = 1:4,
+                if n <= r
+                    fprintf(fid,['\t',list{n}]);
+                    n = n+1;
+                end
+            end
+            fprintf(fid,'\n');
+        end
+        fprintf(fid,'! \n');
+    end
+
+% looking for efficencies  lines
+    function b = isEfficienciesLine(cline)
+        % an efficiencies line uses a slash as delimiter 
+        b = ~isempty(findstr(cline,'/'));        
+    end
+
+% remove a Species from the efficiencies line
+    function cline = removeSpeciesFromEfficiencies(cline,deadSpeciesNamesList)
+        for k = 1:length(deadSpeciesNamesList)
+            startSpecies = min(findstr(cline,[deadSpeciesNamesList{k},'/']));
+            if ~isempty(startSpecies)              
+                endspecies = min(findstr(cline(startSpecies:end),'/'));
+                endspecies = startSpecies+endspecies;
+                endspecies = endspecies+min(findstr(cline(endspecies+1:end),'/'));
+                cline(startSpecies:endspecies) = blanks(endspecies-startSpecies+1);
+            end       
+        end
+    end
+% fill with blanks
+    function str = blank(n)
+            str = [];
+            for kk = 1:n
+                str = [str,' '];
+            end
+    end
+    function b =  efficienciesContainsDeadSpecies(cline,deadSpeciesNamesList)
+        b = false;
+        for k = 1:length(deadSpeciesNamesList)
+            lngthSpecName = length(deadSpeciesNamesList{k});
+            for l = 1:length(cline)-lngthSpecName-1;
+                foundSpec = strcmp(cline(l:l+lngthSpecName-1),deadSpeciesNamesList{k});
+                b = isLeft(cline,l) && isRight(cline,l) && foundSpec ; 
+                if b 
+                    return
+                end               
+            end
+        end 
+        % local functions for identifying species by name
+        function b = isLeft(cline,l)
+            % checks if a species string is a whole species name or only a part
+            % of a species name: left of the name...
+            b = (l==1) || (strcmp(cline(l-1),' ')) ;
+        end
+        % of a species name: right of the name can be a blank, "<", "+" "=" "(+", or "/"...
+        function b = isRight(cline,l)
+            b = ( strcmp(cline(l+lngthSpecName),' ') ||  strcmp(cline(l+lngthSpecName),'<') ||...
+                strcmp(cline(l+lngthSpecName),'+')||  strcmp(cline(l+lngthSpecName),'=') ||...
+                strcmp(cline(l+lngthSpecName:l+lngthSpecName+1),'(+') ||...
+                strcmp(cline(l+lngthSpecName),'/')) ; 
+        end
+    end
+end
+
+function removeSpeciesCTI(mechFileIn,mechFileOut,deadSpeciesIndexList,deadSpeciesNamesList)
+% removeDeadSpecies(mechFileIn,mechFileOut,deadSpeciesIndexList)
+%   Removes the species (and Reactions) defined in deadSpeciesIndexList and
+%   deadSpeciesNamesList from mechFileIn, the resulting mechanism will be
+%   written in mechFileOut. 
+%   The input arguments deadSpeciesIndexList,deadSpeciesNamesList must be
+%   consistent, i.e. it holds  
+%          species(deadSpeciesIndexList) = deadSpeciesNamesList.
+
+
+
+% check for stupid inputs/output file declaration
+if strcmp(mechFileIn,mechFileOut)
+    error('removeSpeciesCTI:SameInputOutputFile','The input and the output files are the same, are you sure? However, it is not allowed. Bye!')
+end
+% try to open the files
+
+fprintf('removeSpeciesCTI: Indexing input file\n')
+try     
+    indexCti = chemistry.indexCtiFile(mechFileIn);
+catch ME
+    throw(ME)     
+end
+fprintf(['removeSpeciesCTI: Mechanism File contains ', num2str(length(indexCti.species)),' species ',...
+    num2str(length(indexCti.reactions)+length(indexCti.three_bodies)+length(indexCti.falloffs)),' reactions.\n'])
+
+
+% check the input list
+if ~isnumeric(deadSpeciesIndexList)
+    error('removeSpeciesCTI:ListMustBeNumeric','Dead Species Index List must contain the INDICES of dead species')
+else
+    % list is ok
+end
+fprintf(['removeSpeciesCTI: There are ',num2str(length(deadSpeciesIndexList)),' species in dead species list.\n'])
+fprintf('removeSpeciesCTI: I found \n\t')
+listTheSpecies(deadSpeciesNamesList)
+fprintf('removeSpeciesCTI: I will now try to delete all these species and related reacion.\n\t It will take only a few of your earth seconds.\n')
+
+
+%----------------------------------------------------
+% some logical field to mark the "areas of action"
+
+% specify the lines we have to work or not to work
+% initialize all true
+nothingToDo = logical(1:indexCti.nlines);
+handleReactions = logical(1:indexCti.nlines);   handleReactions = ~handleReactions;
+handleIdealGas = logical(1:indexCti.nlines);    handleIdealGas = ~handleIdealGas;
+notToCopy = logical(1:indexCti.nlines); notToCopy = ~notToCopy;
+
+
+
+
+% but we have to modify all ideal_gas blocks, mark the "to removed species"
+nothingToDo(indexCti.ideal_gas(1):indexCti.species(1)-2) = false;
+% we have an action for the to remove species..
+for k = 1:length(deadSpeciesIndexList)
+    if deadSpeciesIndexList(k)==length(indexCti.species)
+        % the last species is choosen, then we mark all lines until the
+        % reactions block starts 
+        nothingToDo(indexCti.species(deadSpeciesIndexList(k)):...
+            min([indexCti.falloffs(1),indexCti.three_bodies(1),indexCti.reactions(1)])-8) = false;
+    else    % the regular case
+        nothingToDo(indexCti.species(deadSpeciesIndexList(k)):indexCti.species(deadSpeciesIndexList(k)+1)-1) = false;
+    end
+end
+
+% and for all reactions
+nothingToDo(indexCti.reactions) = false; % mark reactions be a canditate   
+nothingToDo(indexCti.reactions+1) = false; % mark the options line, it can be empty                                           
+nothingToDo(indexCti.three_bodies) = false; % mark reaction to  be a canditate 
+nothingToDo(indexCti.three_bodies+1) = false; % mark the efficiencies line                                                                                              
+nothingToDo(indexCti.falloffs) = false;       % mark falloffs to be a canditate
+nothingToDo(indexCti.falloffs+1) = false;     % there are four line after the falloff_reaction keyword
+nothingToDo(indexCti.falloffs+2) = false;     % we have to test
+nothingToDo(indexCti.falloffs+3) = false;
+nothingToDo(indexCti.falloffs+4) = false; 
+handleIdealGas(indexCti.ideal_gas(1):indexCti.species(1)-2) = true;
+
+% the special actions:
+% now we remove all species defined in  the parameter "deadSpeciesIndexList"
+% thew simplest action: to handle the "to remove species" 
+for k = 1:length(deadSpeciesIndexList)
+    if deadSpeciesIndexList(k)==length(indexCti.species)
+        % the lst species is choosen, then we mark all lines until the
+        % reactions block starts
+        notToCopy(indexCti.species(deadSpeciesIndexList(k)):...
+            min([indexCti.falloffs(1),indexCti.three_bodies(1),indexCti.reactions(1)])-8) = true;
+    else    % the regular case
+        notToCopy(indexCti.species(deadSpeciesIndexList(k)):indexCti.species(deadSpeciesIndexList(k)+1)-1) = true;
+    end
+end
+handleReactions(indexCti.reactions) = true;
+handleReactions(indexCti.three_bodies) = true;
+handleReactions(indexCti.falloffs) = true;
+inSpecies = false;
+deadReactionRemove = false;
+threeBodyRemove = false;
+falloffRemove  = false;
+
+% open the files
+[fidMech,mesg] = fopen(mechFileIn,'r');
+if fidMech < 0 
+    fprintf(mesg)
+end 
+[fidNewMech,mesg] = fopen(mechFileOut,'w');
+if fidNewMech < 0 
+    fprintf(mesg)
+end
+
+% for counting the actions
+nToRemoveReactions = 0;
+% a counter to make the ideal_gas mames unique
+nGasBlocks = 0;
+
+for k = 1:indexCti.nlines
+    if nothingToDo(k)   
+        %-----------------------------------
+        % comments living species etc
+        % just copy...
+        %-----------------------------------
+        cline = fgetl(fidMech); 
+        fprintf(fidNewMech,[cline,'\n']);
+        %
+    elseif handleIdealGas(k)
+        %-----------------------------------
+        % the ideal gas block contains also a species block that should be
+        % modified. We copy all lines exept this species block. However, its
+        % length is not fixed so we must scan it
+        % The species block starts with the keyword "species" and ends with the
+        % keyword "reactions". The keywords start at pos 7 in every line
+        cline = fgetl(fidMech); 
+        if length(cline)>=13 && strcmp(cline(7:13),'species')
+            inSpecies = true; % switch species block "on"
+        elseif length(cline)>=15&& strcmp(cline(7:15),'reactions')
+            inSpecies = false; % switch species block "off"
+        end
+        if inSpecies
+            % the "species action"
+            % analyse the line and remove the dead species
+            nline = chemistry.removeDeadSpeciesFromIdealGasBlock(cline,deadSpeciesNamesList);
+            fprintf(fidNewMech,[nline,'\n']);            
+        elseif length(cline)>=13 && strcmp(cline(7:14),'kinetics')
+            % can be omitted                %
+        elseif length(cline)>=13 && strcmp(cline(7:15),'transport')           % 
+            fprintf(fidNewMech,[cline,'\n']);   
+        elseif length(cline)>=13 && strcmp(cline(1:5),'ideal')
+            nGasBlocks = nGasBlocks + 1;
+            fprintf(fidNewMech,['ideal_gas(name = "gas_',num2str(nGasBlocks),'",\n']);              
+        else
+            fprintf(fidNewMech,[cline,'\n']);
+        end            
+    elseif notToCopy(k)    
+        %-----------------------------------
+        % The  definition lines of dead species:
+        % removing by "comment out"
+        %-----------------------------------
+%         cline = fgetl(fidMech);
+        fgetl(fidMech); 
+%         fprintf(fidNewMech,['#  ',cline,'\n']);  
+    elseif handleReactions(k)
+        %-----------------------------------
+        % The definition lines  of dead recations: 
+        % removing  by "comment out" 
+        %-----------------------------------
+        cline = fgetl(fidMech);
+        
+        % ckecking if the reaction contains a dead species
+        if chemistry.isDeadReaction(cline,deadSpeciesNamesList)
+%             fprintf(fidNewMech,['#  ',cline,'\n']);
+            deadReactionRemove = true;
+            nToRemoveReactions = nToRemoveReactions +1;
+%            
+            if strcmp(cline(1:5),'three') 
+                % mark the line after a dead three body as "to be removed"
+                threeBodyRemove = true;
+            elseif strcmp(cline(1:4),'fall') 
+                falloffRemove = true;
+            end
+        else
+            % if the reaction contains only living species, we copy it into
+            % the reduced mech file
+            deadReactionRemove = false;
+            falloffRemove = false;
+            threeBodyRemove = false;
+            fprintf(fidNewMech,[cline,'\n']);
+        end
+    else
+        cline = fgetl(fidMech);
+        if length(cline)>16&&strcmp(cline(10:16),'options')&&deadReactionRemove
+%             fprintf(fidNewMech,['#',cline,'\n']);  
+            deadReactionRemove = false;
+        elseif threeBodyRemove
+            % remove the efficnecies line of a three body reaction
+            threeBodyRemove = false;
+%             fprintf(fidNewMech,['#',cline,'\n']);           
+        elseif falloffRemove
+            % remove the falloff lines 2-5
+            % analyse the first two characters in the lines
+            if length(cline)>=11
+                key = cline(10:11);
+            else
+                key = ' ';
+            end
+            switch key
+                case {'kf' 'fa'}
+%                     fprintf(fidNewMech,['#',cline,'\n']);                    
+                case 'ef'
+%                     fprintf(fidNewMech,['#',cline,'\n']);   
+                    falloffRemove = false;
+                otherwise
+            end
+        elseif length(cline)>=21,             
+            if strcmp(cline(10:21),'efficiencies') 
+                % remove the dead species from the efficiencies list
+                newEfficiencies = chemistry.removeDeadFromEfficiencies(cline,deadSpeciesNamesList);
+                fprintf(fidNewMech,[newEfficiencies,'\n']);
+            else
+                fprintf(fidNewMech,[cline,'\n']);
+            end
+        else
+            fprintf(fidNewMech,[cline,'\n']);
+        end
+        % up to now we write a empty line instead to make the "real action"
+        % here we define here the action    
+    end
+end
+fprintf('removeDeadSpecies: Try to write the files and close them.\n')
+% close all files
+
+st = fclose(fidNewMech);
+if st<0
+    error('removespeciesCTI:fcloseFails','fclose fals to close the mechfile')
+end
+st = fclose(fidMech);
+if st<0
+    error('removespeciesCTI:fcloseFails','fclose fals to close the mechfile')
+end
+st = fclose('all');
+if st<0
+    error('removespeciesCTI:fcloseFails','fclose fals to close the mechfile')
+end
+ 
+
+
+
+
+fprintf(['removeDeadSpecies: Afterall, I remove ',num2str(nToRemoveReactions),...
+    ' of ',num2str(length(indexCti.reactions)+length(indexCti.three_bodies)+length(indexCti.falloffs)),' reactions'])
+fprintf(['...or round ',num2str(round(100*nToRemoveReactions/(length(indexCti.reactions)+length(indexCti.three_bodies)+length(indexCti.falloffs)))),' percent. \n'])
+fprintf('removeDeadSpecies: OK. Thats all, see you!\n\n')  
+end
+
+
+% a tiny helper function: it lists a cell array full of strings
+function listTheSpecies(list)
+    m = ceil(length(list)/4);
+    r = length(list);
+    n = 1;
+    fprintf('\n')
+    for k = 1:m,
+        for l = 1:4,
+            if n <= r
+                fprintf(['\t',list{n}]);
+                n = n+1;
+            end
+        end
+        fprintf('\n')
+    end
+    fprintf('\n')
+end
+% function species = scanSpeciesList(elementsLine)
+% % utility function for removeSpecies
+% % it reads the species from the elementsLine and gives back a cell array
+% % containing the species names
+% 
+% species = [];
+% l = 0;
+% candidate = [];
+% spec = [];
+% for k = 1:length(elementsLine)
+%     
+%     
+%     if  ~strcmp(elementsLine(k),' ')
+%         spec = [spec,elementsLine(k)];
+%     end
+%     if strcmp(elementsLine(k),' ')
+%         l = l+1;
+%         if ~isempty(spec)
+%             candidate{l}= spec;
+%             spec = [];
+%         end
+%     end 
+% end
+% l = 1;
+% for k = 1:length(candidate)
+%     if ~(isempty(candidate{k})||strcmp(candidate{k},'""",'))
+%         species{l}=candidate{k};
+%         l = l+1;
+%     end
+% end
+% 
+% 
+% end
+
+
+
+function species = selectSpeciesFromList(elementsLine)
+% utility function for removeSpecies
+% it reads the species from the elementsLine and gives back a cell array
+% containing the species names
+
+
+l = 0;
+inList = false;
+spec = [];
+for k = 1:length(elementsLine)
+    
+    
+    if inList && ~(strcmp(elementsLine(k),' ')||strcmp(elementsLine(k),'"'))
+        spec = [spec,elementsLine(k)];
+    end
+    if inList && (strcmp(elementsLine(k),' ')||strcmp(elementsLine(k),'"'))
+        l = l+1;
+        if ~isempty(spec)
+            candidate{l}= spec;
+            spec = [];
+        end
+    end 
+    if strcmp(elementsLine(k),'"')
+       inList = swtch(inList);
+    end
+end
+
+
+l = 1;
+for k = 1:length(candidate)
+    if ~(isempty(candidate{k})||strcmp(candidate{k},'=>')||strcmp(candidate{k},'<=>')||strcmp(candidate{k},'+'))
+        species{l}=candidate{k};
+        l = l+1;
+    end
+end
+
+
+
+
+    function b = swtch(b)       
+        b = ~b;                
+    end
+endfunction CanteraString = vector2CanteraString(speciesNames,v)
+% CanteraString = vector2CanteraString(speciesNames,vectorOfFractions)
+% Function to create a Mass/Molefractions string for use with canteras
+% set(gas) method. Useful to initialize a gas object with values computed by
+% onother program or given data.
+% Exapmle:
+% Assume we have a chemistry object c with a solved reactor
+% We want to use send the mole fraction at the end of the time domain to a
+% gas object.
+%   moles = c.getMoleFractions({'CH4' 'O2'});
+%   set(gas,'X',vector2CanteraString({'CH4' 'O2'},moles(:,end)));
+%  (c) Hong Bin Xu for VIRTUHCON
+
+
+if ~iscellstr(speciesNames)
+    error('Vector2CanteraString:MustBeCell','The Names of the species must be a cell array of strings');
+end
+if ~isnumeric(v)
+    error('Vector2CanteraString:NotNumeric','The array of the fractions must be numeric');
+else
+    if length(speciesNames)~=length(v)
+        error('Vector2CanteraString:DimensionMissmatch','The dimensions of the names and the fractions must be equal');
+    end
+end
+
+CanteraString = '';
+n = length(speciesNames);
+for i = 1:n
+    S = char(speciesNames(i));
+    CanteraString = strcat(CanteraString,S,':',num2str(v(i)));
+    if i~=n
+        CanteraString=strcat(CanteraString,',');
+    end
+end
+end

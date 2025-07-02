@@ -1,0 +1,402 @@
+function obj = evaluate(obj,varargin)
+% method for class ga to evaluate the functional obj.objective
+
+% take the  genome an create a mechanism
+% if obj.aimsToReduce 'species', we write a new mechfile
+% if obj.aimsToReduce 'reactions' we manipulate the gas object by setting
+% multiplier to obj.currentGeneration.reactions...
+
+ 
+if ~isa(obj.currentGeneration,'individual')
+    ME = MException('evaluate:wrongClasss',...
+        'obj.currentGeneration must be of class ''individual''');
+    ME.throw
+end
+
+if ~strcmp(obj.reference.mechanism,obj.genotype.mechanism)
+    ME = MException('ga:evalutate:MechNotEqual',...
+        ['The mechanisms in obj.genotype.baseMechanism and',...
+        ' obj.reference.mechanism must be the same.']);
+    ME.throw
+end
+
+user = getenv('USER');
+[success,message,~] = mkdir(['/home/',user],'tempdir') ;
+if success < 1 && ~strcmp(messageID,'MATLAB:MKDIR:DirectoryExists')     
+        ME = MException('ga:evaluate:mkdirFailed',...
+            ['Making the temporary directory failed with ',...           
+        message]);  
+    ME.throw
+end
+
+% checks, what file we have in the reference object
+mechFileExtension = obj.genotype.mechanism(max(strfind(obj.genotype.mechanism,'.'))+1:end);
+
+[fid,message] = fopen(['/home/',user,'/tempdir/results.txt'],'a');
+if fid < 1
+    ME = MException('ga:evaluate:fopenFailed',...
+        ['Something wrong with fopen. The message was: ',message]);
+    ME.throw
+end
+fprintf(fid,'mech                  |     f      |     nSpecies\n');
+st = fclose(fid);
+if st<0
+    warning('ga:evaluate:FcloseFailed','Closing the data file failed');
+end
+tempObj = obj.reference.copy; % copy instead assigment
+switch obj.aimsToReduce
+    case 'species'
+        for k = 1:length(obj.currentGeneration)
+            mechFile = ['/home/',user,'/tempdir/mechfile',num2str(randi(1e8)),'.',mechFileExtension];
+            % first make the mechanism        
+            obj.reference.removeSpecies(mechFile,obj.currentGeneration(k).speciesNotInclude);
+            % we check of what class the reference object is,
+            % because we have to set the transport model for flames
+            
+            switch class(tempObj )
+                case 'batchReactor'
+                     tempObj.setMechanism(mechFile);
+                case 'flame1d'
+                     tempObj.setMechanism(mechFile,tempObj.transport);
+                case 'recirculationFlame'
+                     tempObj.setMechanism(mechFile,tempObj.flame.transport); 
+                otherwise
+                    ME = MException('ga:evaluate:unknownObject',...
+                        ['The class ',class(tempObj ),...
+                        ' is not known by ga.evaluate.']);
+                    ME.throw
+            end
+            try
+                % now solve and eval in one block
+                tempObj.solve;    % new handle syntax                 
+                obj.currentGeneration(k).value = feval(obj.objective,obj.reference,tempObj);            
+            catch ME
+                warning(['An error occures:',...
+                    ME.message]);
+                % if we catch an error, value = inf...
+                obj.currentGeneration(k).value = Inf;
+            end
+%             obj.currentGeneration(k).value = feval(obj.objective,obj.reference,tempObj);
+            
+            [fid,message] = fopen(['/home/',user,'/tempdir/results.txt'],'a');
+            if fid < 1
+                ME = MException('ga:evaluate:fopenFailed',...
+                    ['Something wrong with fopen. The message was: ',...
+                    message]);
+                ME.throw
+            end
+            fprintf(fid,[mechFile,'  |  ',num2str(obj.currentGeneration(k).value)]);
+            fprintf(fid,['  |  ',num2str(tempObj.nSpecies)]);
+            fprintf(fid,'\n');
+            st = fclose(fid);
+            if st<0
+                warning('ga:evaluate:fcloseFailed','Closing the data file failed');
+            end
+        end
+    case 'reactions'
+        % not jet implemented, but comming soon 
+        % The evaluation in "reactions" case works completely different.
+        % We use the multiplier property of the kinetics object to switch
+        % reactions on/off. The mechanism as file will not changed. 
+        
+        % first we try to solve the reference object
+        try
+             tempObj.solve; % handle syntax
+        catch ME
+            throwAsCaller(ME);
+        end
+        % now we evaluate the copy of the rerecence object
+        
+        for k = 1:length(obj.currentGeneration)
+            tempObj.setReactions(...
+                obj.currentGeneration(k).reactions);
+            tempObj.solve;
+            obj.currentGeneration(k).value = ...
+                feval(obj.objective,obj.reference,tempObj);       
+            [fid,message] = fopen(['/home/',user,'/tempdir/results.txt'],'a');
+            if fid < 1
+                ME = MException('ga:evaluate:fopenFailed',...
+                    ['Something wrong with fopen. The message was: ',message]);
+                ME.throw
+            end
+            fprintf(fid,num2str(obj.currentGeneration(k).value));
+            fprintf(fid,['  |  ',...
+                num2str(sum(obj.currentGeneration(k).reactions))]);
+            fprintf(fid,'\n');
+            st = fclose(fid);
+            if st<0
+                warning('ga:evaluate:fcloseFailed',...
+                    'Closing the data file failed');
+            end
+        end
+    otherwise        
+        ME = MException('ga:evaluate:WrongTarget',...
+            ['The target ',char(obj.aimsToReduce), ' is not valid']);
+        ME.throw
+end
+end
+
+ classdef ga < handle
+%   ga  class for genetic algorithm to minimize 
+%   min f(x)
+%   st. g(x) = 0
+%   where g(x) solves a chemical reactor, flame etc. based on chemical
+%   source term reduction.
+
+%   properties
+    properties(Access=public)
+        genotype@individual = individual(); 
+        objective@function_handle;
+        reference@chemistry;
+        aimsToReduce@char;
+        options@optionsGA = optionsGA(); 
+    end
+    
+    properties(SetAccess=private)
+        currentGeneration; % do NOT initialize here anything!               
+    end
+    
+    properties (Constant,Access = private)
+        % define some errors
+         wrInpFile = MException('ga:WrongInputFileFormat',...
+                                    'The input must be a cti, inp or xml File.');
+         wrNumbInp = MException('ga:WrongNumberInputs',...
+                        'The number of input arguments must be one.')
+         noString = MException('ga:NoString',...
+                            'The argument must be a string');       
+         noFile = MException('ga:NoFileFound',...
+                            'Cannot open the mechanism file.');
+    end
+    
+%   
+%   methods 
+
+
+    methods(Access = public)
+        % hight level (user) methods: constructor, solve...
+        function obj = ga(varargin)
+            % constructor method for ga
+            switch length(varargin)
+                case 0
+                    obj.genotype = individual();
+                    obj.objective = '';  
+                    obj.aimsToReduce = 'species';               
+                case {1 2 3}
+                    for k = 1:length(varargin)
+                        switch class(varargin{k})
+                            case 'individual'
+                                obj.genotype = varargin{k};
+                            case 'function_handle'
+                                obj.objective = varargin{k};
+                            case {'batchReactor' 'flame1d' 'reactorNet'}
+                            obj.reference = varargin{k};
+                            otherwise
+                                ME = MException('ga:WrongClassOfArguments',...
+                                    ['Arguments must be of class ''individual'','...
+                                    ' ''function_handle'' or ''batchReactor''.']);
+                                throw(ME);                        
+                        end
+                        obj.aimsToReduce = 'species';  
+                    end                    
+                otherwise
+                    throw(obj.wrNumbInp)                    
+            end                
+        end        
+        solve(obj,options);
+        solveForReactions(obj);
+        guessFixSpecies(obj,nsp);
+    end  
+ 
+    methods(Access = private)
+        % low level methods, mainly used by solve    
+        makeFirstGeneration(obj,nind); 
+        mutate(obj,prob);
+        mutateOne(obj)  
+        xing(obj);
+        select(obj,varargin);
+        evaluate(obj);
+    end
+end
+function  guessFixSpecies(obj,nsp)
+            switch nargin
+                case 1
+                    nsp = 6;
+                otherwise
+            end
+            [m] = max(obj.reference.moleFractions,[],2); 
+            [~,indx] = sort(m,1,'descend');
+            speciesList = obj.reference.speciesNames(indx(1:nsp));
+            fprintf('ga:guessFixSpecies: Guess the following species for fixing:\n\t ')
+            for k = 1:nsp-1
+                fprintf([speciesList{k},', ']);
+            end
+            fprintf([speciesList{k+1},'\n']);
+            obj.genotype = obj.genotype.fix(speciesList);
+        endfunction  makeFirstGeneration(obj,nind)
+% g.firstGeneration creates a first generation by mutation of the
+% base individual. It fills the currentGeneration properties
+% with a vector of indviduals.
+
+if nargin < 2
+    nind = 2*length(obj.genotype.chromosome);
+elseif isempty(nind)
+    nind = 2*length(obj.genotype.chromosome);
+end
+fprintf(['First generation consists of ',...
+    num2str(nind),' individuals\n']);
+if ~isa(obj.genotype,'individual')
+    error('Xing:InPutMustBeIndividual',...
+        'The input must be a cell array. Each entry must be a individual object')
+end
+% call the individual mutation method
+for k = 1:nind
+    switch obj.aimsToReduce
+        case 'species'
+            obj.currentGeneration = ...
+                [obj.currentGeneration obj.genotype.mutation(obj.options.prob)];  
+        case 'reactions'
+            obj.currentGeneration = ...
+                [obj.currentGeneration obj.genotype.mutationR(obj.options.prob)];
+        otherwise
+            error('firstGeneration:WrongAim',...
+                'The reduction strategie can only be ''species'' or ''reactions''.')
+    end
+end
+endfunction  mutate(obj,prob)
+% mutates the genetic information
+if nargin<2
+    prob = 0.3;
+end
+switch obj.aimsToReduce
+    case 'species'
+        for k = 1:length(obj.currentGeneration)
+            obj.currentGeneration(k) = ...
+                obj.currentGeneration(k).mutation(prob);  
+        end
+    case 'reactions'
+        % not jet implemented, but comming soon
+        for k = 1:length(obj.currentGeneration)
+            obj.currentGeneration(k) =...
+                obj.currentGeneration(k).mutationR(prob);  
+        end
+    otherwise
+        error('firstGeneration:WrongAim',...
+            'The reduction strategie can only be ''species'' or ''reactions''.')
+end
+endfunction  mutateOne(obj)   
+% mutates only one bit of the genetic information.
+switch obj.aimsToReduce
+    case 'species'
+        for k = 1:length(obj.currentGeneration)
+            obj.currentGeneration(k) = obj.currentGeneration(k).mutationN(1);  
+        end
+    case 'reactions'
+        % not jet implemented, but comming soon
+    otherwise
+        error('firstGeneration:WrongAim',...
+            'The reduction strategie can only be ''species'' or ''reactions''.')
+end
+endfunction  select(obj,varargin)
+% selects the best ones from the current generation of individuals
+switch length(varargin)
+    case 0
+        switch obj.aimsToReduce
+            case 'species'
+                obj.currentGeneration = ...
+                    obj.genotype.selection(obj.currentGeneration);
+            case 'reactions'
+                % to implement 
+            otherwise
+        end
+    case 2
+        switch obj.aimsToReduce
+            case 'species'
+                obj.currentGeneration = ...
+                    obj.genotype.selection(obj.currentGeneration,...
+                    varargin{1},varargin{2});
+            case 'reactions'
+                % to implement 
+            otherwise
+        end
+    otherwise
+        ME =MException('ga:select:WrongNumberOfArguments',...
+            'The number of arguments must be 0 or 2.');
+        throw(ME);
+end
+endfunction  solve(obj,options)
+            % g.solve runs the GA to optimize the mechanism
+            % g.solve(n) uses n generations
+            % if n is not given, n is set internally to 5
+            if nargin<2
+                n = 5;
+                tresh = 6;
+                select_the = 'survivors';
+                nind = [];
+                prob = 0.3;
+            else
+                n = options.ngen;
+                select_the = options.selectionStrategie;
+                tresh = options.selectionThreshold;
+                nind = options.nind;  
+                prob = options.prob;
+            end
+            if isempty(obj.currentGeneration)
+                 obj.makeFirstGeneration(nind);
+            end
+            try
+                for k = 1:n
+                    try
+                        obj.evaluate; 
+                    catch ME
+                        ME.rethrow
+                    end
+                    fprintf(['Evaluation of the ',...
+                        num2str(k),' generation successful.\n']);  
+                    obj.select(select_the,tresh);
+                    best  = obj.currentGeneration(1:min(length(obj.currentGeneration),3));
+                    obj.xing;
+                    purex = obj.currentGeneration;
+                    obj.mutateOne; 
+                    xandmutate1 = obj.currentGeneration;
+                    obj.mutate(prob);
+                    obj.currentGeneration = ...
+                        [purex xandmutate1 obj.currentGeneration best ];                      
+                end
+                fprintf('Last generation...\n')
+                try 
+                    obj.evaluate;                     
+                catch ME
+                    ME.rethrow
+                end
+                obj.select(select_the,tresh); 
+            catch ME
+                fprintf(['ga.solve:evaluateFails: ',...
+                    'Catch an error send from evaluate with message: ',ME.message,...
+                    'Try to return.\n']);
+                ME.rethrow
+            end
+            fprintf('\n\t\tsolved GA sucessfuly...\n\t\t       *******\n')
+        endfunction solveForReactions(obj)
+% Method for reducing mechanism by GA on the reactions. The reactions are
+% switched on/off by using the setMultiplier method of kinetics class.
+
+% coppy the reference object
+%current = obj.reference;
+% re-define the reactions
+obj.aimsToReduce = 'reactions';
+if isempty(obj.currentGeneration)
+    obj.makeFirstGeneration(250);
+end
+obj.evaluate; 
+endfunction  xing(obj) 
+% g.xing crosses the genes of the currentGeneration of genetic information
+switch obj.aimsToReduce
+    case 'species'
+        obj.currentGeneration = obj.genotype.Xing(obj.currentGeneration);
+    case 'reactions'
+        obj.currentGeneration = obj.genotype.XingR(obj.currentGeneration);
+    otherwise
+        error('firstGeneration:WrongAim',...
+            'The reduction strategie can only be ''species'' or ''reactions''.')
+end
+end

@@ -1,0 +1,3579 @@
+function basis = POD_basis(obj,varargin)
+% obj.POD_basis
+% computes the POD basis wrt. the data in massFractions
+switch nargin
+    case 1        
+        % no extra arguments
+        nOfSnapshots = 30;         
+    case 2
+        % nOfSnapshots
+        nOfSnapshots = round(varargin{1});
+%     case
+    otherwise
+        % 
+        ME = MException('batchReactor:POD_basis:TooManyArguments',...
+            'Too many arguments, cf. help POD_basis:');
+        help POD_basis;
+        throw(ME);
+end
+ steps = round(length(obj.times)/nOfSnapshots);
+Y = [obj.temp(:,1:steps:end);...
+            obj.massFractions(:,1:steps:end)];
+ 
+R = Y'*Y;
+[EV,EW] = eig(R,'nobalance');
+EW = diag(EW);
+indx = EW>1e-3;
+n = length(EW);
+
+ 
+% basis = EV;
+
+for k= 1:nOfSnapshots
+     basis(:,k) = 1/sqrt(EW(k))*Y*EV(:,k);
+end
+ 
+
+endclassdef batchReactor < chemistry
+    % BATCHREACTOR class.
+    % contructor call: batchReactor(mechfile) 
+    % U.Pruefert 2011
+    
+    
+    % private = results of the simulation
+    properties (SetAccess = private)
+        % only 0D-reactor specific properties are defined here
+        % Note that mass and mole fractions are come from the
+        % chemistry super-class 
+        
+        times;  % timesteps
+        lambda; % times scales
+        %-----------------------------
+        ignt;
+        %-----------------------------
+        
+    end
+    
+    % public = user data 
+    properties (Access = public)          
+        % type of reactor: constant volume, constant pressure,
+        % common reactor, the tibox-reactor, etc.    
+        reactor;
+        %-----------------------------
+        initialMoleFractions;
+        initialMassFractions; 
+        %-----------------------------
+        initialTemperature;
+        initialPressure;
+        %-----------------------------
+        simulationTime;
+        equilibrium = 'false';
+        %-----------------------------
+        % for the common reactor...
+        % if not set, standard values are used
+        heatflux;
+        vdot;
+        area;
+        %-----------------------------        
+    end
+    
+  
+    
+    methods(Access=public)
+        % The CONSTRUCTOR
+        function obj = batchReactor(varargin)
+        if nargin == 0 
+            % Create empty cell array if no input argsuments
+            super_class_args = {}; 
+        else
+            % Use specified arguments
+            super_class_args{1} = varargin{1};           
+        end
+        % batchReactor(mechanism)         
+        obj = obj@chemistry(super_class_args{:});  
+        
+        end 
+        
+        % ...some signatures of functions  
+        solve(obj,varargin); 
+        setInitialMassFractions(obj,names,values);  
+        speciesList = getInitialSpecies(obj);
+        varargout = switchReactions(obj,reactions); 
+        varargout = timeScaleJacobi(obj,flag1,val1);
+        varargout = timeScale(obj,varargin)
+        varargout = speciesProductionRates(obj,varargin);
+        obj = copy(obj); % needs argument!
+        M = sensitivityMatrix(obj,y);
+        varargout = equilibrate(obj,arg);
+    end
+    
+    methods(Access=public,Hidden)
+        % time scales for timeScale method...
+        varargout = ijts(obj,flag1,val1);
+        varargout = evts(obj,flag1,val1,flag2,val2);
+        varargout = timeScaleCaudalMod(obj,flag1,val1);
+        varargout = pvts(obj,species);
+        varargout = gpvts(obj,species);        
+    end
+    
+    methods (Access=private,Hidden)
+        % source terms for batch reactors...
+        w = conhp(obj,t,y);
+        w = conuv(obj,t,y);
+        w = conht(obj,t,y);
+        w = creactor(obj,t,y);  
+        
+        % reactor types - called by solve...
+        commonReactor(obj);
+        constTempReactor(obj);
+        constPressReactor(obj);
+        constPressNetReactor(obj);
+        constVolumeReactor(obj);
+        tibox(obj)  
+        % helper for time scale computing
+        [df,f] = sensitivitY(obj,y);        
+        setTimes(obj,times);      
+        setTemp(obj,times);      
+        setDens(obj,dens);      
+        setPres(obj,pres);
+    end
+    
+    
+end
+function obj = commonReactor(obj)
+obj.reactor = 'commonReactor';
+obj.clearFractions;
+if strcmp(obj.equilibrium,'true')
+    obj. simulationTime = [0, Inf];
+end
+
+
+if  isa(obj.mechanism,'char') && isempty(obj.gas)
+    obj.gas = IdealGasMix(obj.mechanism)  ;
+    fprintf('chemistry.constVolumeReactor: Make obj.gas object\n')
+elseif ~isIdealGas(obj.gas)   
+    error('obj.gas is not an Ideal Gas Mix')
+end
+
+if isempty(obj.initialMoleFractions)
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'Y',obj.initialMassFractions);
+else
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'X',obj.initialMoleFractions);
+end
+y0 = [intEnergy_mass(obj.gas)
+    1.0/density(obj.gas)
+    massFractions(obj.gas)]; %#ok<*CPROP,*PROP>
+% replaces the default value of 1/10 * (t2-t1)
+
+
+% define the cases
+if ~isempty(obj.heatflux) && ~isempty(obj.vdot) && ~isempty(obj.area)
+    rCases = 4; % all "reactor functions" are given
+else
+   ME = MException('batchReactor:commonReactor:noBC',...
+       'For commonReactor heatflux, vdot and area properties must be given');
+   throwAsCaller(ME)
+end
+
+switch obj.equilibrium
+    case 'true'
+        options = odeset('RelTol',1.e-5,'AbsTol',1.e-12,...
+            'Stats','off','Events',@eventfun);
+    case 'false'
+        options = odeset('RelTol',1.e-5,'AbsTol',...
+            1.e-12,'Stats','off');
+    otherwise
+end
+
+% all cases...
+switch rCases    
+    case 4
+        % reactor with the full set of optional functions     
+       try
+            fprintf('Start ode15s 0%% .')
+            out = ode15s(@obj.creactor,obj.simulationTime,y0,options);           
+            fprintf('.. 100%%\n')
+        catch ME
+            ME.message  
+       end    
+    otherwise
+        ME = MException('batchReactor:commonReactor:noBC',...
+            'For commonReactor heatflux, vdot and area properties must be given');
+        throwAsCaller(ME);
+end
+pv = output(out,obj.gas);
+dT = dot(pv(1,:),pv(2:end,:));
+
+[~,indx] = max(dT(1,:),[],2);
+obj.times = pv(1,:);
+if strcmp(obj.equilibrium,'true')
+    obj. simulationTime = [0, obj.times(end)];
+end
+obj.temp = pv(2,:);
+obj.dens = pv(3,:);
+obj.pres =  pv(4,:);
+% 
+
+obj.setMassFractions(pv(5:nSpecies(obj.gas)+4,:));
+obj.setMoleFractions(pv(nSpecies(obj.gas)+5:end,:));
+
+% we define the ignition delay time as the (first) maximum of dT/dt
+obj.ignt = pv(1,indx(1));
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% This functions in only for making the code cleaner. It extracs the
+% different parts from the output structure of ode15s at every time step.
+% Format    time 
+%           temperature
+%           density
+%           pressure
+%           massfraction species_1
+%                   .
+%                   :
+%           massfraction species_nsp
+
+
+    function [value,isterminal,direction] = eventfun(t,y)
+        % event function that stopps the evaluation of the time
+        % integration. Criteria for being stationary is || dY/dt(t,Y)|| <
+        % 1e-3.
+        value =  norm(obj.creactor(t,y),Inf)-1e-3;%  
+        isterminal = 1;   % stop the integration
+        direction =  -1;   % negative direction
+    end
+    function pv = output(s,gas)                
+        soln = s.y;
+        [~,n] = size(s.x);
+        nSpec = nSpecies(gas);
+        pv = zeros(2*nSpec + 4, n);                
+        %                 set(obj.gas,'T',1001.0,'P',oneatm);
+        for j = 1:n
+            ss = soln(:,j);
+            y = ss(3:end);  % skipp total internal 
+            % energy and volumen component
+            mass = sum(y);
+            u_mass = ss(1)/mass; % intEnergy
+            v_mass = ss(2)/mass; % 1/density
+            setMassFractions(gas, y);
+            setState_UV(obj.gas, [u_mass v_mass]);                    
+            pv(1,j) = s.x(j);
+            pv(2,j) = temperature(gas);
+            pv(3,j) = density(gas);
+            pv(4,j) = pressure(gas);
+            pv(5:nSpec+4,j) = y; 
+            pv(nSpec+5:end,j) = moleFraction(gas,speciesNames(gas))';                   
+        end
+    end
+
+% local functions, defining the reactor
+    function v = vdot(~, ~, ~)
+        v = 0.0;                                    % uncomment for constant volume
+        % v = 1.e11 * (pressure(obj.gas) - 101325.0);    % holds pressure very
+        % close to 1 atm
+    end
+%  heat flux (W/m^2).
+    function q = heatflux(~,~)
+        q = 0.0;                                    % adiabatic
+    end
+% surface area (m^2). Used only to compute heat transfer.
+    function a = area(~,~)
+        a = 1.0;
+    end
+% the first derivative of d value /d time, computed by central
+% differences
+    function dt = dot(time,value)
+        delta_t = time(2:end)-time(1:end-1);
+        dt = (value(:,2)-value(:,1))./delta_t(1);
+        dt = [dt,(value(:,3:end)-value(:,1:end-2))*diag(1./(delta_t(1:end-1)+delta_t(2:end)))];
+        dt = [dt,(value(:,end)-value(:,end-1))./delta_t(end)];
+    end
+end
+
+function dydt = conhp(obj,~,y)
+% conhp method gives the reaction rate for const pressure systems.
+% It is private, so U can use it only within methods of class batchReactor.
+%    w = obj.conhp(time,y), 
+% where time is a dummy and will be not used by conhp.
+%
+%    Evaluates the system of ordinary differential
+%    equations for an adiabatic, constant-pressure,
+%    zero-dimensional reactor. It assumes that the 'gas' object
+%    represents a reacting ideal gas mixture. 
+% conhp Method is inspired by conhp from CANTERA 
+% (c) 2012. U.Pruefert VIRTUHCON/TUBAF
+
+% Set the state of the gas, based on the current solution vector.
+
+set(obj.gas, 'T', y(1), 'P', pressure(obj.gas), 'Y', y(2:end));
+mw = molecularWeights(obj.gas);
+% energy equation
+wdot = netProdRates(obj.gas);
+tdot = - temperature(obj.gas) * gasconstant * enthalpies_RT(obj.gas)' ...
+       * wdot / (density(obj.gas)*cp_mass(obj.gas));
+ 
+% species equations
+rrho = 1.0/density(obj.gas);
+dydt = [tdot
+        rrho*mw.*wdot];
+end
+
+function dydt = conht(obj,~,y)
+% CONUV ODE system for a constant-volume, adiabatic reactor.
+%
+%    Function CONUV evaluates the system of ordinary differential
+%    equations for an adiabatic, constant-volume,
+%    zero-dimensional reactor. It assumes that the 'gas' object
+%    represents a reacting ideal gas mixture. 
+
+
+% Set the state of the gas, based on the current solution vector.
+set(obj.gas,  'Rho', density(obj.gas), 'Y', y);
+mw = molecularWeights(obj.gas);
+
+% energy equation
+wdot = netProdRates(obj.gas);
+rrho = 1.0/density(obj.gas);
+% set up column vector for dydt
+dydt =  rrho*mw.*wdot;
+
+
+
+end
+function constPressNetReactor(obj)
+% constPressNetReactor  
+% Zero-dimensional kinetics: adiabatic, constant pressure.
+%
+%
+% 
+%
+%    This reactor uses the class 'Reactor' for
+%    zero-dimensional kinetics simulations. Here the parameters are
+%    set so that the reactor is adiabatic and very close to constant
+%    pressure.
+%
+%   (c) Uwe Pruefert for VIRTUCHON  2011
+
+
+obj.reactor = 'constPressNetReactor';
+% set the initial conditions
+obj.clearFractions;
+if ~isempty(obj.initialMoleFractions)
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'X',obj.initialMoleFractions);
+elseif ~isempty(obj.initialMassFractions)
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'Y',obj.initialMassFractions);
+else
+    error('batchReactor:constPressNetReactor:noFractionsGiven',...
+        'The reactor must be initialized eigher with mole or mass frations.')
+end
+
+% create a reactor, and insert the gas
+r = Reactor(obj.gas);
+
+% create a reservoir to represent the environment
+set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'X','N2:1');
+
+env = Reservoir(obj.gas);
+
+% Define a wall between the reactor and the environment and
+% make it flexible, so that the pressure in the reactor is held
+% at the environment pressure.
+w = Wall;
+install(w,r,env);
+
+% set expansion parameter. dV/dt = KA(P_1 - P_2)
+setExpansionRateCoeff(w, 1.0e6);
+
+% set wall area
+setArea(w, 1.0);
+
+% create a reactor network and insert the reactor:
+network = ReactorNet({r});
+
+% N steps: for very stiff problems, 800 seems to be sufficient, but for
+% non-stiff problems it can be a little bit overkill.
+N = 800;
+
+% simulation time, not neccessary [0,t]...
+t = min(obj.simulationTime);
+dt = (max(obj.simulationTime)-min(obj.simulationTime))/N;
+
+% clear all fields in the object 
+obj.clearFractions;
+obj.times = [];         obj.temp = [];
+obj.dens = [];          obj.pres = [];
+
+fprintf('Solve reactor net...')  
+for n = 1:N     
+    t = t + dt;
+    try
+        advance(network,t);
+    catch ME    
+        ME.throw;
+    end
+    obj.times(n) = time(network);    
+    obj.temp(n) = temperature(r);
+    obj.dens(n) = density(r);
+    obj.pres(n) = pressure(r);   
+    obj.moleFractions(:,n) = moleFractions(obj.gas);
+    obj.massFractions(:,n) = massFractions(obj.gas);
+end
+fprintf(' done.\n')
+ 
+% ignition time as argmax(dT/dt)
+[~,indx] = max((obj.temp(2:end)-obj.temp(1:end-1))./(obj.times(2:end)-obj.times(1:end-1)));
+obj.ignt = obj.times(indx);
+
+end
+function obj = constPressReactor(obj)
+
+obj.reactor = 'constPressReactor';
+obj.clearFractions;
+if strcmp(obj.equilibrium,'true')
+    obj. simulationTime = [0, Inf];
+end
+if  isa(obj.mechanism,'char') && isempty(obj.gas)
+    obj.gas = IdealGasMix(obj.mechanism)  ;
+    fprintf('chemistry.constVolumeReactor: Make obj.gas object\n')
+elseif ~isIdealGas(obj.gas)   
+    error('obj.gas is not an Ideal Gas Mix')
+end
+
+ 
+if isempty(obj.initialMoleFractions)
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure);                
+    set(obj.gas,'Y',obj.initialMassFractions);                
+else
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'X',obj.initialMoleFractions);
+end
+y0 = [temperature(obj.gas)
+    massFractions(obj.gas)];
+% replace the default value of 1/10 * (t2-t1)
+switch obj.equilibrium
+    case 'true'
+        options = odeset('RelTol',1.e-5,'AbsTol',1.e-12,...
+            'Stats','off','Events',@eventfun);
+    case 'false'
+        options = odeset('RelTol',1.e-5,'AbsTol',1.e-15,'Stats','on');
+    otherwise
+end
+
+try     
+    [x,y] = ode15s(@obj.conhp,obj.simulationTime,y0,options); 
+    out.y = y';
+    out.x=x';
+catch ME
+    ME.rethrow;  
+end
+
+pv = output(out);
+dT = dot(pv(1,:),pv(2,:));
+
+[~,indx] = max(dT(1,:));
+
+obj.times = pv(1,:);
+if strcmp(obj.equilibrium,'true')
+    obj. simulationTime = [0, obj.times(end)];
+end
+
+obj.temp = pv(2,:);
+obj.dens =  pv(3,:);
+obj.pres = obj.initialPressure;
+obj.vol = 1.0./obj.dens;
+% 
+obj.setMassFractions(pv(4:nSpecies(obj.gas)+3,:));
+obj.setMoleFractions(pv(nSpecies(obj.gas)+4:end,:));
+% we define the ignition delay time as the (first) maximum of dT/dt
+obj.ignt = pv(1,indx(1));
+%            obj.speciesNames = speciesNames(obj.gas);
+
+% output
+    function [value,isterminal,direction] = eventfun(t,y)
+        % event function that stopps the evaluation of the time
+        % integration. Criteria for being stationary is || dY/dt(t,Y)|| <
+        % 1e-3.
+        value =  norm(obj.conhp(t,y),Inf)-1e-3;%  
+        isterminal = 1;   % stop the integration
+        direction =  -1;   % negative direction
+    end
+    function pv = output(s)                
+        soln = s.y;
+        [~,n] = size(s.x);
+        nSpec = nSpecies(obj.gas);
+        pv = zeros(2*nSpec + 3, n);                
+        %                 set(obj.gas,'T',1001.0,'P',oneatm);
+        for j = 1:n
+            y = soln(2:end,j);
+            setMassFractions(obj.gas,y);              
+            pv(1,j) = s.x(j); % time
+            pv(2,j) = s.y(1,j);  
+            pv(3,j) = density(obj.gas);
+            pv(4:nSpec+3,j) = y; 
+            pv(nSpec+4:end,j) = moleFraction(obj.gas,speciesNames(obj.gas))';      
+        end
+    end
+% derivative overwrites DOT operator locally
+    function dt = dot(time,value)
+        delta_t = time(2:end)-time(1:end-1);
+        dt = (value(:,2)-value(:,1))./delta_t(1);
+        dt = [dt,(value(:,3:end)-value(:,1:end-2))*diag(1./(delta_t(1:end-1)+delta_t(2:end)))];
+        dt = [dt,(value(:,end)-value(:,end-1))./delta_t(end)];            
+    end
+endfunction  constTempReactor(obj)
+
+obj.reactor = 'constTempReactor';
+obj.clearFractions;
+if strcmp(obj.equilibrium,'true')
+    obj. simulationTime = [0, Inf];
+end
+
+
+if  isa(obj.mechanism,'char') && isempty(obj.gas)
+    obj.gas = IdealGasMix(obj.mechanism)  ;
+    fprintf('chemistry.constTempReactor: Make obj.gas object\n')
+elseif ~isIdealGas(obj.gas)   
+    error('obj.gas is not an Ideal Gas Mix')
+end
+
+
+if isempty(obj.initialMoleFractions)
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure);                
+    set(obj.gas,'Y',obj.initialMassFractions);                
+else
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'X',obj.initialMoleFractions);
+end
+
+switch obj.equilibrium
+    case 'true'
+        options = odeset('RelTol',1.e-5,'AbsTol',1.e-12,...
+            'Stats','off','Events',@eventfun);
+    case 'false'
+        options = odeset('RelTol',1.e-5,'AbsTol',1.e-12,'Stats','off');
+    otherwise
+end
+
+% here only fractions, there is no temperature in the solution
+y0 =  massFractions(obj.gas);
+try
+    fprintf('Start ode15s 0%% .')
+    out = ode15s(@obj.conht,obj.simulationTime,y0,options);
+    fprintf('.. 100%%\n')
+catch ME
+    ME.message      
+end
+pv = output(out);
+dT = dot(pv(1,:),pv(2,:));
+
+[~,indx] = max(dT(1,:));
+
+obj.times = pv(1,:);
+if strcmp(obj.equilibrium,'true')
+    obj. simulationTime = [0, obj.times(end)];
+end
+obj.temp = temperature(obj.gas)*ones(size(obj.times));
+obj.dens = pv(2,:); 
+obj.vol = 1.0./obj.dens;
+obj.pres = pv(3,:);
+% 
+ obj.setMassFractions(pv(4:nSpecies(obj.gas)+3,:));
+ obj.setMoleFractions(pv(nSpecies(obj.gas)+4:end,:));
+% we define the ignition delay time as the (first) maximum of dT/dt
+obj.ignt = pv(1,indx(1));%             
+
+% output
+
+    function [value,isterminal,direction] = eventfun(t,y)
+        % event function that stopps the evaluation of the time
+        % integration. Criteria for being stationary is || dY/dt(t,Y)|| <
+        % 1e-3.
+        value =  norm(obj.conht(t,y),Inf)-1e-3;%  
+        isterminal = 1;   % stop the integration
+        direction =  -1;   % negative direction
+    end
+    function pv = output(s)                
+        soln = s.y;
+        [~,n] = size(s.x);         
+        pv = zeros(2*obj.nSpecies + 3, n);            
+       
+        for j = 1:n
+            y = soln(:,j);
+            setMassFractions(obj.gas,y);             
+            pv(1,j) = s.x(j); % time
+            pv(2,j) = density(obj.gas);    
+            pv(3,j) = pressure(obj.gas);
+            pv(4:obj.nSpecies+3,j) = y; 
+            pv(obj.nSpecies+4:end,j) = moleFraction(obj.gas,obj.speciesNames)';      
+        end
+    end
+% derivative overwrites DOT operator locally
+    function dt = dot(time,value)
+        delta_t = time(2:end)-time(1:end-1);
+        dt = (value(:,2)-value(:,1))./delta_t(1);
+        dt = [dt,(value(:,3:end)-value(:,1:end-2))*diag(1./(delta_t(1:end-1)+delta_t(2:end)))];
+        dt = [dt,(value(:,end)-value(:,end-1))./delta_t(end)];            
+    end
+endfunction obj = constVolumeNetReactor(obj)
+
+% reset and mark the object
+obj.reactor = 'constVolumeNetReactor';
+obj.clearFractions;
+
+% set the initial conditions
+
+if ~isempty(obj.initialMoleFractions)
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'X',obj.initialMoleFractions);
+elseif ~isempty(obj.initialMassFractions)
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'Y',obj.initialMassFractions);
+else
+    error('batchReactor:constVolumeNetReactor:noFractionsGiven',...
+        'The reactor must be initialized eigher with mole or mass frations.')
+end
+% create a reactor, and insert the obj.gas
+r = Reactor(obj.gas);
+
+% create a reactor network and insert the reactor
+network = ReactorNet({r});
+
+% N steps: for very stiff problems, 800 seems to be sufficient, but for
+% non-stiff problems it can be a little bit overkill.
+N = 800;
+
+% simulation time, not neccessary [0,t]...
+t = min(obj.simulationTime);
+dt = (max(obj.simulationTime)-min(obj.simulationTime))/N;
+
+% clear all fields in the object 
+obj.clearFractions;
+obj.times = [];         obj.temp = [];
+obj.dens = [];          obj.pres = [];
+
+fprintf('Solve reactor net...')  
+for n = 1:N
+    t = t + dt;
+    try
+        advance(network, t);
+    catch ME
+        % hmmmm????
+        ME.rethrow;
+    end
+    obj.times(n) = time(network);
+    
+    obj.temp(n) = temperature(r);
+    obj.dens(n) = density(r);
+    obj.pres(n) = pressure(r);
+    
+    obj.moleFractions(:,n) = moleFractions(obj.gas);
+    obj.massFractions(:,n) = massFractions(obj.gas);       
+end
+fprintf(' done\n')
+
+ 
+% ignition time as argmax(dT/dt)
+[~,indx] = max((obj.temp(2:end)-obj.temp(1:end-1))./(obj.times(2:end)-obj.times(1:end-1)));
+obj.ignt = obj.times(indx);
+end% a constant volume reactor using conuv and ode15s 
+function constVolumeReactor(obj)
+
+obj.reactor = 'constVolumeReactor';
+obj.clearFractions;
+if strcmp(obj.equilibrium,'true')
+    obj. simulationTime = [0, Inf];
+end
+
+
+
+if  isa(obj.mechanism,'char') && isempty(obj.gas)
+    obj.gas = IdealGasMix(obj.mechanism)  ;
+    fprintf('chemistry.constVolumeReactor: Make obj.gas object\n')
+elseif ~isIdealGas(obj.gas)   
+    error('obj.gas is not an Ideal Gas Mix')
+end
+
+
+if isempty(obj.initialMoleFractions)
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'Y',obj.initialMassFractions);
+else
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'X',obj.initialMoleFractions);
+end
+y0 = [temperature(obj.gas)
+    massFractions(obj.gas)];
+%                 ones(length(y0),length(y0))
+% replace the default value of 1/10 * (t2-t1)
+
+switch obj.equilibrium
+    case 'true'
+        options = odeset('RelTol',1.e-5,'AbsTol',1.e-12,...
+            'Stats','off','Events',@eventfun);
+    case 'false'
+        options = odeset('RelTol',1.e-5,'AbsTol',1.e-12,'Stats','off');
+    otherwise
+end
+
+try
+    fprintf('Start ode15s 0%% .')
+    out = ode15s(@obj.conuv,obj.simulationTime,y0,options);
+    fprintf('.. 100%%\n')
+catch ME
+    ME.message  
+end
+pv = output(out);
+dT = dot(pv(1,:),pv(2:end,:));
+
+[~,indx] = max(dT(1,:),[],2);
+obj.times = pv(1,:);
+if strcmp(obj.equilibrium,'true')
+    obj. simulationTime = [0, obj.times(end)];
+end
+obj.temp = pv(2,:);
+obj.dens = pv(3,:);
+obj.pres =  pv(4,:); 
+obj.vol = 1./obj.dens;
+% 
+obj.setMassFractions(pv(5:nSpecies(obj.gas)+4,:));
+obj.setMoleFractions(pv(nSpecies(obj.gas)+5:end,:));
+% we define the ignition delay time as the (first) maximum of dT/dt
+obj.ignt = pv(1,indx(1));
+
+
+    function [value,isterminal,direction] = eventfun(t,y)
+        % event function that stopps the evaluation of the time
+        % integration. Criteria for being stationary is || dY/dt(t,Y)|| <
+        % 1e-3.
+        value =  norm(obj.conuv(t,y),Inf)-1e-3;%  
+        isterminal = 1;   % stop the integration
+        direction =  -1;   % negative direction
+    end
+% output
+    function pv = output(s)                
+        soln = s.y;
+        [~,n] = size(s.x);                
+        nSpec = nSpecies(obj.gas);
+        pv = zeros(2*nSpec+4, n);                
+        %                 set(obj.gas,'T',1001.0,'P',oneatm);
+        for j = 1:n
+            y = soln(2:end,j);
+            mass = sum(y);
+            u_mass = intEnergy_mass(obj.gas)/mass;
+            v_mass = 1.0/density(obj.gas)/mass;
+            setMassFractions(obj.gas, y);
+            setState_UV(obj.gas, [u_mass v_mass]); 
+            
+            pv(1,j) = s.x(j); % time
+            pv(2,j) = s.y(1,j); % temperature
+            pv(3,j) = density(obj.gas);
+            pv(4,j) = pressure(obj.gas);
+            
+            pv(5:nSpec+4,j) = y./mass; 
+            pv(nSpec+5:end,j) = moleFraction(obj.gas,speciesNames(obj.gas))';      
+        end
+    end
+% derivative overwrites DOT operator locally
+    function dt = dot(time,value)
+        delta_t = time(2:end)-time(1:end-1);
+        dt = (value(:,2)-value(:,1))./delta_t(1);
+        dt = [dt,(value(:,3:end)-value(:,1:end-2))*diag(1./(delta_t(1:end-1)+delta_t(2:end)))];
+        dt = [dt,(value(:,end)-value(:,end-1))./delta_t(end)];
+    end
+end
+
+function dydt = conuv(obj,~,y)
+% CONUV ODE system for a constant-volume, adiabatic reactor.
+%
+%    Function CONUV evaluates the system of ordinary differential
+%    equations for an adiabatic, constant-volume,
+%    zero-dimensional reactor. It assumes that the 'obj.gas' object
+%    represents a reacting ideal obj.gas mixture. 
+
+
+% Set the state of the obj.gas, based on the current solution vector.
+set(obj.gas, 'T', y(1), 'Rho', density(obj.gas), 'Y', y(2:end));
+nsp = nSpecies(obj.gas);
+mw = molecularWeights(obj.gas);
+% energy equation
+wdot = netProdRates(obj.gas);
+tdot = - temperature(obj.gas) * gasconstant * (enthalpies_RT(obj.gas) - ones(nsp,1))' ...
+       * wdot / (density(obj.gas)*cv_mass(obj.gas));
+
+rrho = 1.0/density(obj.gas);
+% set up column vector for dydt
+dydt = [ tdot 
+        rrho*mw.*wdot];
+
+
+
+end
+function obj2 = copy(obj1)
+% copy function for batchReactor
+% Because of chemistry is an handle, we need also a hardcopy method...
+%  
+
+if ~obj1.isvalid
+    ME = MException('batchReactor:copy',...
+        'Invalid or deleted object');
+    throw(ME)
+end
+
+% Create a NEW object... 
+obj2 = batchReactor();
+
+% Copy all properties into the new object...
+obj2.gas = obj1.gas;
+obj2.mechanism = obj1.mechanism ;
+obj2.speciesNames = obj1.speciesNames;
+obj2.times = obj1.times;
+obj2.lambda = obj1.lambda;
+obj2.ignt = obj1.ignt;
+obj2.temp = obj1.temp;
+obj2.dens = obj1.dens;
+obj2.pres = obj1.pres;
+obj2.vol = obj1.vol;
+obj2.reactor = obj1.reactor;
+obj2.initialMoleFractions = obj1.initialMoleFractions;
+obj2.initialMassFractions = obj1.initialMassFractions;
+obj2.initialTemperature = obj1.initialTemperature;
+obj2.initialPressure = obj1.initialPressure;
+obj2.simulationTime = obj1.simulationTime;
+obj2.equilibrium = obj1.equilibrium;
+obj2.heatflux = obj1.heatflux;
+obj2.vdot = obj1.vdot;
+obj2.area = obj1.area;
+obj2.massFractions = obj1.massFractions;
+obj2.moleFractions = obj1.moleFractions;
+end
+
+function dydt = creactor(obj,t,y)
+% REACTOR ODE system for a generic zero-dimensional reactor.
+%
+%    Function REACTOR evaluates the system of ordinary differential
+%    equations for a zero-dimensional reactor with arbitrary heat
+%    transfer and  volume change. 
+%
+% Solution vector components:
+%    y(1)   Total internal energy U
+%    y(2)   Volume V
+%    y(3)   Mass of species 1
+%    ....
+%    y(2+nsp) Mass of last species
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+%
+%                  *  IMPORTANT NOTE *
+%          Here we claim that Y is given already in
+%                 (NORMED) MASSFRACTIONS
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+  
+%  y = y(:,j);
+  int_energy =y(1);
+  vol =y(2);
+  masses =y(3:end);
+  
+  % set the state of the obj.gas by specifying (u,v,{Y_k})
+  setMassFractions(obj.gas,masses);
+  setState_UV(obj.gas, [int_energy vol]);
+  p = pressure(obj.gas);
+
+  % volume equation
+  vdt = feval(@obj.vdot, t, vol, obj.gas);
+
+  % energy equation
+  a = feval(@obj.area, t, vol);
+  q = feval(@obj.heatflux, t, obj.gas);  
+  udt = -p * vdt + a * q;
+
+  % species equations
+  ydt =  ydot(obj.gas);
+
+  % set up column vector for dydt
+  dydt = [ udt
+		vdt
+		ydt ];
+end
+function val = dist1(obj1,obj2)
+%val = dist1(obj1,obj2)
+% Simple distance function of two chemistry objects.
+% It measures the relative differences in temperature  and in the main species given
+% by the inital set in the L2 norm, ie.
+% sqrt(sum(int(X_i(obj1)-X_i(obj2))^2))/int(X_i(obj1))
+% Note that the norm is scaled by int(obj1). 
+
+% speciesList = obj1.getInitalSpecies;
+
+ 
+nsp = 6;
+[m] = max(obj1.moleFractions,[],2); 
+[~,indx] = sort(m,1,'descend');
+speciesList = obj1.speciesNames(indx(1:nsp));
+fprintf('batchReactor:dist1: Compute error for species ')
+
+for k = 1:nsp-1
+    fprintf([speciesList{k},', ']);
+end
+fprintf([speciesList{k+1},'\n']);
+
+switch obj1.reactor    
+    case {'constVolumeNetReactor' 'constPressNetReactor'}
+        % reactors with constant number of grid points
+        time =  obj1.times;
+        for k = 1:nsp 
+            int(k) = 1/nsp*sqrt(trapez(time,(obj1.getMoleFractionsByName(speciesList{k})...
+                -obj2.getMoleFractionsByName(speciesList{k})).^2))...
+                /sqrt(trapez(time,obj1.getMoleFractionsByName(speciesList{k}).^2)); 
+        end
+        val = sqrt(trapez(time,(obj1.temp-obj2.temp).^2))/sqrt(trapez(time,obj1.temp.^2)) ;
+        for k = 1:nsp
+            if int(k)<inf
+                val = val+int(k);
+            end
+        end
+        val = val+abs(obj1.nSpecies-obj2.nSpecies)/(obj1.nSpecies+obj2.nSpecies);
+    otherwise
+        % reactors with non-constant number of grid points.
+        % use a refined mesh for both objects
+        time = grefine(obj1.times);       
+        for k = 1:nsp            
+            moleFrac1 = interp1(obj1.times,obj1.getMoleFractionsByName(speciesList{k}),time);
+            moleFrac2 = interp1(obj2.times,obj2.getMoleFractionsByName(speciesList{k}),time);
+            int(k) = 1/nsp*sqrt(trapez(time,(moleFrac1-moleFrac2).^2))/sqrt(trapez(time,moleFrac1.^2)); 
+        end
+        temp1 = interp1(obj1.times,obj1.temp,time);
+        temp2 = interp1(obj2.times,obj2.temp,time);
+        
+        val = sqrt(trapez(time,(temp1-temp2).^2))/sqrt(trapez(time,temp1.^2)) ;
+        for k = 1:nsp
+            if int(k)<inf
+                val = val+int(k);
+            end
+        end
+end
+% local functions
+
+    function grid = grefine(grid)
+        % refines the discrete time
+        grid = sort([grid 0.5*(grid(2:end)+grid(1:end-1))]);
+    end
+
+    function val = trapez(x,y)
+        % trapezidual rule
+         val = sum(0.5*(y(2:end)+y(1:end-1)).*(x(2:end)-x(1:end-1)));        
+    end
+endfunction val = dist11(obj1,obj2)
+%val = dist1(obj1,obj2)
+% Distance function of two chemistry objects.
+% It measures the relative differences in temperature  and in the main
+% species. If the error in the species and temperature is larger than a
+% tolerance of 20%, val = Inf, else val = sum (int(Y_i-Y_i^mech)) #species^mech / #species_ref
+ 
+
+ 
+% nsp = 6;
+% [m] = max(obj1.moleFractions,[],2); 
+% [~,indx] = sort(m,1,'descend');
+[~,speciesList] = obj1.mainSpecies;
+nsp = length(speciesList);
+fprintf('\nCompute error for species:\n')
+
+for k = 1:nsp-1
+    fprintf([speciesList{k},', ']);
+end
+fprintf([speciesList{k+1},'\n']);
+
+switch obj1.reactor    
+    case {'constVolumeNetReactor' 'constPressNetReactor'}
+        % reactors with constant number of grid points
+        time =  obj1.times;
+        for k = 1:nsp 
+            int(k) = 1/nsp*sqrt(trapez(time,(obj1.getMoleFractionsByName(speciesList{k})...
+                -obj2.getMoleFractionsByName(speciesList{k})).^2))...
+                /sqrt(trapez(time,obj1.getMoleFractionsByName(speciesList{k}).^2)); 
+        end
+        
+        val = sqrt(trapez(time,(obj1.temp-obj2.temp).^2))/sqrt(trapez(time,obj1.temp.^2)) ;
+        for k = 1:nsp
+            if int(k)<inf
+                val = val+int(k);
+            end
+        end
+        fprintf(['Error in species = ',num2str(val),'\n']);
+        if val<1
+            val = val+1-abs(obj1.nSpecies-obj2.nSpecies)/(obj1.nSpecies+obj2.nSpecies);
+        else
+            val = inf;
+        end         
+    otherwise
+        % reactors with non-constant number of grid points.
+        % use a refined mesh for both objects
+        time = grefine(obj1.times);       
+        for k = 1:nsp            
+            moleFrac1 = interp1(obj1.times,obj1.getMoleFractionsByName(speciesList{k}),time);
+            moleFrac2 = interp1(obj2.times,obj2.getMoleFractionsByName(speciesList{k}),time);
+            int(k) = 1/nsp*sqrt(trapez(time,(moleFrac1-moleFrac2).^2))/sqrt(trapez(time,moleFrac1.^2)); 
+        end
+        temp1 = interp1(obj1.times,obj1.temp,time);
+        temp2 = interp1(obj2.times,obj2.temp,time);
+        val = sum(int);
+       
+        fprintf(['Error in species = ',num2str(val),'\n']);
+        if val <1
+            val = val+1-abs(obj1.nSpecies-obj2.nSpecies)/(obj1.nSpecies+obj2.nSpecies)+...
+                sqrt(trapez(time,(temp1-temp2).^2))/sqrt(trapez(time,temp1.^2)) ;
+        else
+            val = inf;
+        end
+end
+
+% local functions
+
+    function grid = grefine(grid)
+        % refines the discrete time
+        grid = sort([grid 0.5*(grid(2:end)+grid(1:end-1))]);
+    end
+
+    function val = trapez(x,y)
+        % trapezidual rule
+         val = sum(0.5*(y(2:end)+y(1:end-1)).*(x(2:end)-x(1:end-1)));        
+    end
+end
+function val = dist12(obj1,obj2,varargin)
+%val = dist12(obj1,obj2)
+% Computes the distance between two batchReactor objects. 
+
+% speciesList = obj1.getInitalSpecies;
+
+% define the weightf for the measures:
+% alpha [species temperature lambda #species]
+if nargin==2
+    alpha = [1,0,0,1];
+else
+    alpha = varargin{1};
+end
+
+
+if isempty(obj1.initialMassFractions)
+    speciesList = obj1.getSpeciesFromInitialFractions(obj1.initialMoleFractions);
+    nsp = length(speciesList);
+else
+    speciesList = obj1.getSpeciesFromInitialFractions(obj1.initialMassFractions);
+    nsp = length(speciesList);
+end
+if isempty(speciesList)&& alpha(1)>0
+    error('batchReactor:dist12:EmptyFractions','The Species list is empty.');
+elseif alpha(1)>0
+    fprintf('batchReactor:dist12: Compute error for species ');
+    for k = 1:nsp-1
+        fprintf([speciesList{k},', ']);
+    end
+    fprintf([speciesList{k+1},'\n']);
+end
+
+
+
+
+
+switch obj1.reactor    
+    case {'constTempReactor', 'constPressReactor','constVolumeReactor'}
+        % reactors with non-constant number of grid points.
+        % use a refined mesh for both objects
+        time = unique([obj1.times  obj2.times]);
+        
+        [~,M,~] = assema1d(time,[1 1 1]',0,1,0);
+        M = diag(sum(M));
+        int = zeros(1,nsp+2); % species + temp + lambda
+        if  alpha(1)>0 %only for alpha ~= 0
+            for k = 1:nsp            
+                moleFrac1 = interp1(obj1.times,obj1.getMoleFractionsByName(speciesList{k}),time);
+                moleFrac2 = interp1(obj2.times,obj2.getMoleFractionsByName(speciesList{k}),time);
+                int(k) = alpha(1) * sqrt((moleFrac1-moleFrac2)*M*(moleFrac1-moleFrac2)'); 
+            end
+        end
+        % compute the timescales if neccessary 
+        if isempty(obj1.lambda)&&alpha(3)~=0
+            fprintf('dist12:Compute Timescales for input one\n');
+           obj1 = obj1.speciesTimeScales;
+        end
+        if isempty(obj2.lambda)&&alpha(3)~=0
+            fprintf('dist12:Compute Timescales for input two\n');
+            obj2 = obj2.speciesTimeScales;
+        end   
+       
+        
+        if alpha(2)>0
+            temp1 = interp1(obj1.times,obj1.temp,time);
+            temp2 = interp1(obj2.times,obj2.temp,time);        
+            int(nsp+1) = alpha(2) * sqrt((temp1-temp2)*M*(temp1-temp2)');
+        end   
+         
+        
+        if alpha(3)>0
+            timescale1 = interp1(obj1.times,obj1.lambda,time);
+            timescale2 = interp1(obj2.times,obj2.lambda,time);
+            int(nsp+2) =  alpha(3) * sqrt((timescale1 -  timescale2)*M*(timescale1 -  timescale2)');        
+        end
+        
+        
+        
+        val = 0;
+        for k = 1:length(int)
+            if int(k)<inf
+                val = val+int(k);
+            end
+        end
+    otherwise
+        error('batchReactor:WrongReactorType','Wrong reactor type for this measure.')
+end
+val = val + alpha(4)*obj2.nSpecies/obj1.nSpecies;
+ 
+
+     
+   
+endfunction val = dist13(obj1,obj2,varargin)
+%val = dist13(obj1,obj2)
+% Computes the distance between two batchReactor objects. 
+% implements the error(y-y) < 0.1 condition
+
+
+% define the weightf for the measures:
+% alpha [species temperature lambda #species]
+if nargin==2
+    alpha = [1,0,0,1];
+else
+    alpha = varargin{1};
+end
+
+
+
+[~,speciesList] = obj1.mainSpecies(4);
+nsp = length(speciesList);
+ 
+if isempty(speciesList)&& alpha(1)>0
+    error('batchReactor:dist13:EmptyFractions','The Species list is empty.');
+elseif alpha(1)>0
+    fprintf('batchReactor:dist13: Compute error for species:\n ');
+    for k = 1:nsp-1
+        fprintf([speciesList{k},', ']);
+    end
+    fprintf([speciesList{k+1},'\n']);
+end
+
+
+
+
+
+switch obj1.reactor    
+    case {'constTempReactor', 'constPressReactor','constVolumeReactor'}
+        % reactors with non-constant number of grid points.
+        % use a refined mesh for both objects
+        time = unique([obj1.times  obj2.times]);
+        
+        [~,M,~] = assema1d(time,[1 1 1]',0,1,0);
+        M = diag(sum(M));
+        int = zeros(1,nsp+2); % species + temp + lambda
+        if  alpha(1)>0 %only for alpha ~= 0
+            for k = 1:nsp        
+                moleFrac1 = interp1(obj1.times,obj1.getMoleFractionsByName(speciesList{k}),time);
+                moleFrac2 = interp1(obj2.times,obj2.getMoleFractionsByName(speciesList{k}),time);     
+                if sqrt(moleFrac1*M*moleFrac1')<1e-12
+                    warning('batchReactor:dist13:IntegralAlmostZero',...
+                        'The Integral is almost zero, value of relative error may be inacurate.')
+                end
+                err = sqrt((moleFrac1-moleFrac2)*M*(moleFrac1-moleFrac2)')/...
+                        sqrt(moleFrac1*M*moleFrac1');
+                    fprintf(['dist13: Species ',speciesList{k},' has relative error of ',num2str(err*100),' %%\n']);
+                if err<0.2
+                    int(k) = 0; 
+                else
+                    int(k) = Inf;           
+                end
+            end
+        end
+        % compute the timescales if neccessary 
+        if isempty(obj1.lambda)&&alpha(3)~=0
+           fprintf('dist13:Compute Timescales for input one\n');
+           obj1 = obj1.eigenvalueTimeScales('eps',1e-3);
+        end      
+        if isempty(obj2.lambda)&&alpha(3)~=0
+            fprintf('dist13:Compute Timescales for input two\n');
+            obj2 = obj2.eigenvalueTimeScales('eps',1e-3);
+        end
+        
+        if alpha(2)>0
+            temp1 = interp1(obj1.times,obj1.temp,time);
+            temp2 = interp1(obj2.times,obj2.temp,time);        
+            if  ((temp1-temp2)*M*(temp1-temp2)')/...
+                    (temp1*M*temp1')<0.2
+                int(nsp+1) = 0;
+            else
+                int(nsp+1) = Inf;
+            end;
+        end   
+         
+        
+        if alpha(3)>0
+            timescale1 = interp1(obj1.times,obj1.lambda,time);
+            timescale2 = interp1(obj2.times,obj2.lambda,time);
+            int(nsp+2) =  alpha(3) * sqrt((timescale1 -  timescale2)*M*(timescale1 -  timescale2)');
+        end
+        
+        
+        
+        val = sum(int);
+    otherwise
+        error('batchReactor:WrongReactorType','Wrong reactor type for this measure.')
+end
+val = val + alpha(4)*obj2.nSpecies/obj1.nSpecies;
+ 
+
+     
+   
+endfunction val = dist2(obj1,obj2,speciesList)
+%val = dist2(obj1,obj2,speciesList)
+% Simple distance function of two chemistry objects.
+% It measures the relative differences in temperature  and in the species
+% given by speciesList
+% sqrt(sum(int(X_i(obj1)-X_i(obj2))^2))/int(X_i(obj1))
+% Note that the norm is scaled by int(obj1). 
+
+% speciesList = obj1.getInitalSpecies;
+
+time = grefine(obj1.times);
+
+n = length(speciesList);
+if isa(speciesList,'cell')
+    for k = 1:n
+        indx(k) = getSpeciesIndex(speciesList{k});
+    end
+elseif isa(speciesList,'numeric')
+     
+    if min(speciesList)<=0
+        error('dist2:ListContainsZero','speciesList should contain only nubers =>1')
+    end
+    indx = speciesList;
+else 
+    error('dist2:WronFormat','SpeciesList should be a cell or numeric vector')
+end
+
+for k = 1:n
+    moleFrac1 = interp1(obj1.times,obj1.getMoleFractions(indx(k)),time);
+    moleFrac2 = interp1(obj2.times,obj2.getMoleFractions(indx(k)),time);
+    int(k) = 1/n*sqrt(trapez(time,(moleFrac1-moleFrac2).^2))/sqrt(trapez(time,moleFrac1.^2)); 
+end
+
+temp1 = interp1(obj1.times,obj1.temp,time);
+temp2 = interp1(obj2.times,obj2.temp,time);
+
+val = sqrt(trapez(time,(temp1-temp2).^2))/sqrt(trapez(time,temp1.^2)); 
+for k = 1:n
+    if int(k)<inf
+        val = val+int(k);
+    end
+end
+val = val+(obj2.nLivingSpecies/obj1.nLivingSpecies)^2; 
+
+% local functions
+
+    function grid = grefine(grid)
+        % refines the discrete time
+        grid = sort([grid 0.5*(grid(2:end)+grid(1:end-1))]);
+    end
+
+    function val = trapez(x,y)
+        % trapezidual rule
+         val = sum(0.5*(y(2:end)+y(1:end-1)).*(x(2:end)-x(1:end-1)));        
+    end
+endfunction val = dist20(obj1,obj2)
+speciesList = obj1.mainSpecies;
+nsp = length(speciesList);
+fprintf('\nCompute error for species:\n')
+class( obj1.speciesNames(speciesList(1)))
+for k = 1:nsp-1
+    fprintf([ obj1.speciesNames{speciesList(k)},', ']);
+    
+end
+fprintf([obj1.speciesNames{speciesList(k)},'\n']);
+
+time = grefine(obj1.times);
+time = grefine(time);
+
+for k = 1:nsp            
+    moleFrac1 = interp1(obj1.times,...
+        obj1.massFractions(speciesList(k),:),time);
+    moleFrac2 = interp1(obj2.times,...
+        obj2.massFractions(speciesList(k),:),time);
+    int(k) = 1/nsp*sqrt(trapez(time,(moleFrac1-moleFrac2).^2))...
+        /sqrt(trapez(time,moleFrac1.^2)); 
+end
+temp1 = interp1(obj1.times,obj1.temp,time);
+temp2 = interp1(obj2.times,obj2.temp,time);
+val = sum(int) + ...
+    trapez(time,(temp1-temp2).^2)/trapez(time,temp1.^2);
+fprintf(['Relative error in species = ',num2str(val),'\n']);
+
+if val>1
+    val = Inf;
+end
+end 
+
+% local functions
+
+    function grid = grefine(grid)
+        % refines the discrete time
+        grid = unique([grid 0.5*(grid(2:end)+grid(1:end-1))]);
+    end
+
+    function val = trapez(x,y)
+        % trapezidual rule
+         val = sum(0.5*(y(2:end)+y(1:end-1)).*(x(2:end)-x(1:end-1)));        
+    end
+ 
+
+function val = dist21(obj1,obj2)
+ 
+
+time = grefine(obj1.times);
+time = grefine(time);
+
+           
+    
+temp1 = interp1(obj1.times,obj1.temp,time);
+temp2 = interp1(obj2.times,obj2.temp,time);
+val =  sqrt(trapez(time,(temp1-temp2).^2)/trapez(time,(temp1-obj1.initialTemperature).^2));
+fprintf(['Relative error in temperature = ',num2str(val),'\n']);
+
+if val>0.05
+    val = Inf;
+else
+    val = obj2.nSpecies+val;
+end
+
+end 
+
+% local functions
+
+    function grid = grefine(grid)
+        % refines the discrete time
+        grid = unique([grid 0.5*(grid(2:end)+grid(1:end-1))]);
+    end
+
+    function val = trapez(x,y)
+        % trapezidual rule
+         val = sum(0.5*(y(2:end)+y(1:end-1)).*(x(2:end)-x(1:end-1)));        
+    end
+ 
+
+function val = dist21reactions(obj1,obj2)
+ 
+
+time = grefine(obj1.times);
+time = grefine(time);
+
+           
+    
+temp1 = interp1(obj1.times,obj1.temp,time);
+temp2 = interp1(obj2.times,obj2.temp,time);
+val =  sqrt(trapez(time,(temp1-temp2).^2)/trapez(time,temp1.^2));
+
+fprintf(['Relative error in temperature = ',num2str(val),'\n']);
+
+if val>0.3
+    val = Inf;
+else
+    val = obj2.nActiveReactions;
+end
+
+end 
+
+% local functions
+
+    function grid = grefine(grid)
+        % refines the discrete time
+        grid = unique([grid 0.5*(grid(2:end)+grid(1:end-1))]);
+    end
+
+    function val = trapez(x,y)
+        % trapezidual rule
+         val = sum(0.5*(y(2:end)+y(1:end-1)).*(x(2:end)-x(1:end-1)));        
+    end
+ 
+
+function val = dist3(obj1,obj2)
+%val = dist1(obj1,obj2)
+% Simple distance function of two chemistry objects.
+% It measures the relative differences btw. obj1 and obj2  only in the temperature.
+
+ 
+
+time = grefine(obj1.times);
+
+
+temp1 = interp1(obj1.times,obj1.temp,time);
+temp2 = interp1(obj2.times,obj2.temp,time);
+
+val = trapez(time,(temp1-temp2).^2)/trapez(time,temp1.^2)...            
+                +(obj2.nSpecies/obj1.nSpecies)^2; 
+
+
+% local functions
+
+    function grid = grefine(grid)
+        % refines the discrete time
+        grid = sort([grid 0.5*(grid(2:end)+grid(1:end-1))]);
+    end
+
+    function val = trapez(x,y)
+        % trapezidual rule
+         val = sum(0.5*(y(2:end)+y(1:end-1)).*(x(2:end)-x(1:end-1)));        
+    end
+endfunction val = dist4(obj1,obj2)
+%dist4(obj1,obj2)
+% jet another dist function
+
+if abs(obj1.ignt-obj2.ignt)>0.25*obj1.ignt
+    val = inf;
+else
+    val = (obj1.ignt-obj2.ignt)^2+(obj2.nLivingSpecies/obj1.nLivingSpecies); 
+end
+
+
+
+end
+
+function val = dist5(obj1,obj2)
+%dist4(obj1,obj2)
+% jet another dist function
+
+if abs(obj1.ignt-obj2.ignt)>0.25*obj1.ignt
+    val = inf;
+else
+    time = grefine(obj1.times);
+    temp1 = interp1(obj1.times,obj1.temp,time);
+    temp2 = interp1(obj2.times,obj2.temp,time);
+
+    val = trapez(time,(temp1-temp2).^2)/trapez(time,temp1.^2)...
+            +(obj1.ignt-obj2.ignt)^2/obj1.ignt...
+                +(obj2.nLivingSpecies/obj1.nLivingSpecies)^2; 
+end
+
+
+
+
+
+
+
+
+% local functions
+
+    function grid = grefine(grid)
+        % refines the discrete time
+        grid = sort([grid 0.5*(grid(2:end)+grid(1:end-1))]);
+    end
+
+    function val = trapez(x,y)
+        % trapezidual rule
+         val = sum(0.5*(y(2:end)+y(1:end-1)).*(x(2:end)-x(1:end-1)));        
+    end
+endfunction val = dist6(obj1,obj2)
+%dist4(obj1,obj2)
+% jet another dist function
+
+if abs(obj1.ignt-obj2.ignt)/obj1.ignt>0.33 || abs(obj1.temp(end)-obj2.temp(end))/obj1.temp(end) > 0.1
+    val = inf;
+else    
+    val = (obj2.nSpecies/obj1.nSpecies)^2+obj2.nSpecies/obj2.nLivingSpecies; 
+end
+endfunction val = dist7(obj1,obj2)
+%dist4(obj1,obj2)
+% jet another dist function
+fprintf('Error in Tign:\n')
+
+if abs(obj1.ignt-obj2.ignt)/obj1.ignt>0.33 || abs(obj1.temp(end)-obj2.temp(end))/obj1.temp(end) > 0.1
+    val = inf;
+else    
+    val = (obj2.nSpecies/obj1.nSpecies)^2+obj2.nSpecies/obj2.nLivingSpecies+...
+        (obj1.ignt-obj2.ignt)/obj1.ignt; 
+end
+endfunction val = distPartikelTemp(obj1,obj2)
+ 
+
+time = grefine(obj1.times);
+time = grefine(time);
+
+           
+    
+temp1 = interp1(obj1.times,obj1.temp,time);
+temp2 = interp1(obj2.times,obj2.temp,time);
+ intT1 = trapez(time,(temp1-obj1.initialTemperature).^2);
+intErr = trapez(time,(temp1-temp2).^2);
+val =  sqrt(intErr/intT1);
+
+fprintf(['\nNorm of temperature = ',num2str(sqrt(intT1)),'\n']);
+fprintf(['Intergral error (T-T_mech)^2  = ',num2str(intErr),'\n']);
+fprintf(['Relative error in temperature = ',num2str(val),'\n']);
+fprintf(['Number of species in mechanism = ',num2str(obj2.nSpecies),'\n\n'])
+
+if val>0.01
+    val = Inf;
+else
+    val = obj2.nSpecies+val;
+end
+
+end 
+
+% local functions
+
+    function grid = grefine(grid)
+        % refines the discrete time
+        grid = unique([grid 0.5*(grid(2:end)+grid(1:end-1))]);
+    end
+
+    function val = trapez(x,y)
+        % trapezidual rule
+         val = sum(0.5*(y(2:end)+y(1:end-1)).*(x(2:end)-x(1:end-1)));        
+    end
+ 
+
+function equilibrate(obj,arg)
+% varargout = obj.equilibrate  
+% Additional argument must be a two-letter string, which must
+% be one of the set
+%        ['TP','TV','HP','SP','SV','UV','PT','VT','PH','PS','VS','VU'].
+%        If H, U, S, or V is specified, the value must be the specific
+%        value (per unit mass).
+ 
+if isempty(obj.initialMoleFractions)&&isempty(obj.initialMassFractions)
+    throw(emptyFieldException)
+end
+if isempty(obj.initialMoleFractions)
+    mole = false;
+else
+    mole = true;
+end
+fprintf('Compute mole fractions y/n: ');
+if mole
+    fprintf('y\n')
+else
+    fprintf('n\n')
+end
+if nargin<2
+    arg = 'TP';
+end
+try
+    set(obj.gas,'T',obj.initialTemperature);
+    set(obj.gas,'P',obj.initialPressure);
+    if mole
+        set(obj.gas,'X',obj.initialMoleFractions);
+    else
+        set(obj.gas,'Y',obj.initialMassFractions);
+    end
+     
+    equilibrate(obj.gas,arg);
+     
+catch ME
+    throw(ME)
+end
+
+switch nargout
+    case 0
+        obj.temp = temperature(obj.gas);
+        obj.pres = pressure(obj.gas);
+        obj.dens = density(obj.gas);
+        if mole
+            obj.moleFractions = moleFractions(obj.gas);
+        else
+            obj.massFractions = massFractions(obj.gas);
+        end
+    otherwise
+        throw(wrongNumberOutputException);
+end
+end     
+function varargout = evts(obj,flag1,val1,flag2,val2)
+% Eigenvalue based Time Scale inspired by Jean Caudal...
+% (c) 2012 U.P. for VIRTUHCON
+% 
+% br.timeScaleCaudal(['eps',val,'step',val])
+% Usage: 
+% Input parameter
+% a) empty
+% b) 'eps',val
+%  uses val as "crtiteria of relevance" to select time scales 
+% c) 'steps',val 
+%   evaluates every val-th time step or evaluates at times val if
+%   length(val)>1
+% Examples
+%  br.timeScaleCaudal('eps',0.01);
+%  br.timeScaleCaudal('eps',0.01,'steps',2);
+%  br.timeScaleCaudal(['eps',1e-3,'steps',[0 0.1 0.5 1])
+% Output parameter
+% a) empty plots relevant time scales
+% b) one gives back the batchReactor-object with obj.lambda = Tau
+% c) two [tau,Tau]  where tau are all and Tau are the relevant time scales 
+% Examples
+%  br.timeScaleCaudal('eps',0.01); 
+% plot relevant time scales
+%  br = br.timeScaleCaudal('eps',0.01); 
+% updates the object
+%  [tau,Tau] = br.timeScaleCaudal('eps',0.01);
+%  loglog(br.times,tau,'y.')
+%  hold on
+%  loglog(br.times,Tau,'k.')
+% computes time scales and plots all in yellow and relevant in black 
+% Note eps  = 0 <=> all time scales are relevant
+ 
+
+epsilon = 0.01;
+indexTimes = 1:length(obj.times);
+obj.lambda = [];
+if isempty(obj.massFractions)&&isempty(obj.initialMassFractions)
+    ME = MException('batchReactor:fullTimeScale:emptyMassFractions',...
+        ['The mass fraction property is empty',...
+        ' you shold solve the reactor first before',...
+        ' trying to compute time scales.']);
+    throw(ME);
+    
+elseif isempty(obj.massFractions)
+    fprintf('SPTS: Use initial mass fractions\n');
+    % For static computations we use intiial mass fractions
+    obj.massFractions = obj.initialMassFractions;
+    obj.temp = obj.initialTemperature;
+    indexTimes = 1;
+end   
+    switch nargin
+        case 1
+            % without additional parameters
+        case 3
+            switch flag1
+                case 'steps'
+                    if length(val1)>1
+                        indexTimes = getTimesIndex(obj,val1 );
+                    else
+                        indexTimes = 1:val1:length(obj.times);
+                        fprintf(['Take every ',num2str(val1),'-th timestep, ',...
+                            'i.e. evaluate ',num2str(length(indexTimes)),' points\n'])
+                    end
+                case {'eps' 'epsilon'}
+                    epsilon = val1;
+                otherwise
+            end
+        case 5
+            switch flag1
+                case 'steps'
+                    if length(val1)>1
+                        indexTimes = getTimesIndex(obj,val1 );
+                    else
+                        indexTimes = 1:val1:length(obj.times);
+                        fprintf(['Take every ',num2str(val1),'-th timestep, ',...
+                            'i.e. evaluate ',num2str(length(indexTimes)),' points\n'])
+                    end
+                 case {'eps' 'epsilon'}
+                    epsilon = val1;
+                otherwise
+            end
+            switch flag2
+                case 'steps'
+                    if length(val2)>1
+                        indexTimes = getTimesIndex(obj,N );
+                    else
+                        indexTimes = 1:val2:length(obj.times);
+                        fprintf(['Take every ',num2str(val2),'-th timestep, ',...
+                            'i.e. evaluate ',num2str(length(indexTimes)),' points\n'])
+                    end
+                 case {'eps' 'epsilon'}
+                    epsilon = val2;
+                otherwise
+            end            
+        otherwise
+            % Hmmmm????
+            ME = MException('batchReactor:timeScaleCaudal:TooManyArguments',...
+                'The number of arguments must be 0, 2, or 4.'); 
+            throw(ME);
+    end
+    tau = zeros(obj.nSpecies,length(indexTimes));   
+%     gamma = zeros(obj.nSpecies,length(indexTimes));   
+     
+    Tau = NaN(obj.nSpecies,length( indexTimes));    
+ 
+    for k = 1:length(indexTimes)
+        %        
+        [DF,F] = obj.sensitivitY([obj.temp(indexTimes(k));obj.massFractions(:,indexTimes(k))]);    
+        [V,eigenval] = eig(DF,'nobalance');          
+        l = 1;
+        while l <=obj.nSpecies
+             if isreal(eigenval(l,l))
+                 tau(l,k) = 1/abs(eigenval(l,l));  
+                 % leave V as it was and jumpt to the next EV            
+                 l = l+1;                
+             else
+                 % Causals complex rule : 
+                 % tau(i) = 1/| Re(lambda)| and 
+                 % tau(i+1) = 1/| Im(lambda) |
+                 tau(l,k) = 1/abs(real(eigenval(l,l)));                
+                 tau(l+1,k) = 1/abs(imag(eigenval(l,l))); 
+                 % put the real and imaginary part of the Eigenvector in
+                 % the new basis V
+                 V(:,l:l+1) = [real(V(:,l)),imag(V(:,l))];                 
+                 % jump over the conjugated brother of lambda
+                 l = l+2;
+             end             
+        end
+        % norm the eigenvectors becaus 'no balance" option gives back an
+        % non normed eigenvector basis.
+        V = V*diag(sqrt(1./diag(V'*V)));        
+        % V is now real  and normal
+        
+        % compute the coefficients of  omega aka F in basis V  
+        % because of V normal gamma = V\F
+        gamma = V\F;
+
+        % scaling, caudal's version...        
+        normgamma =  abs(gamma)/max(abs(gamma));        
+
+        % select gamma  wrt epsilon 
+        indx = normgamma>=epsilon; 
+        Tau(indx,k) = tau(indx,k);  
+        %       relative approximation error
+        % e(k) = norm(F-V(:,indx)*gamma(indx))/norm(F);
+    end        
+    obj.lambda = Tau;
+ 
+% output
+switch nargout
+    case 0
+        % do nothing 
+    case 1
+        % object output
+        varargout{1} = obj;
+    case 2   
+        % tau/Tau output
+        varargout{1} = tau;
+        varargout{2} = Tau;
+    otherwise
+        % 
+end
+end
+
+
+
+
+
+function speciesList = getInitialSpecies(obj)
+% extracts species names from the (user input) inital mole fractions            
+if ~isempty(obj.initialMoleFractions)
+    speciesList = ...
+        obj.getSpeciesFromInitialFractions(obj.initialMoleFractions);
+    return
+end
+if ~isempty(obj.initialMassFractions)
+    speciesList = ...
+        obj.getSpeciesFromInitialFractions(obj.initialMassFractions);
+    return
+end
+error('batchReactor:getInitialSpecies:emptyList',...
+    'The species list is empty.')
+end function index= getTimesIndex(obj,times )
+%UNTITLED Summary of this function goes here
+%   Detailed explanation goes here
+if isempty(obj.times)
+    error('batchReactor:getTimesIndex:emptyTimesField',...
+        'The times property is empty. You should first call solve')
+end
+
+if max(times)>max(obj.times)||min(times)<min(obj.times)
+    error('batchReactor:getTimesIndex:outOfRange',...
+        'One or more values in input times are aut of the times in object.times');
+end
+
+index = zeros(size(times));
+for k = 1:length(times)
+    [~,b] = min(abs(obj.times -times(k)));
+    index(k) = b;
+end
+
+function varargout = gpvts(obj,species)
+% Computes the progress variable time scale defined in Ihme/Pitsch
+% obj = obj.timeScaleProgressVariable(species)
+% species must be a cell array containig the names of the species defining
+% the progress variable, e.g. the species of the main reaction.
+% Example:
+%  obj= obj.timesScaleProgressVariable({'CH4' 'O2'});
+%  obj= obj.timesScaleProgressVariable() uses the  main species, i.e. the
+%  species with the largest value of mole fraction.
+% (c) 2012 U.P. for VIRTUHCON
+
+% epsilon = 0 <=> all time scales counts
+% can be overwritten by parameter
+ 
+% set the default species selection strategy
+
+ME = MException('batchReactor:timeScaleProgressVariable:emptyMassFractions',...
+        ['The mass fraction property is empty',...
+        ' you shold solve the reactor first before',...
+        ' trying to compute time scales.']); 
+
+ 
+if ~isempty(obj.moleFractions)
+    indx = obj.mainSpecies(4,'mole');
+elseif ~isempty(obj.massFractions)
+    indx = obj.mainSpecies(4,'mass');
+else
+     throw(ME);
+end
+progress = zeros(2,length(obj.times));
+indexTimes = 1:length(obj.times);
+obj.lambda = [];
+
+if isempty(obj.massFractions)
+    throw(ME);
+else   
+    switch nargin
+        case 1
+            % without additional parameters
+        case 2
+           try
+                indx =     obj.getSpeciesIndexByName(species)        ;
+           catch ME
+                throwAsCaller(ME);
+            end
+        otherwise
+            % Hmmmm????
+            error('batchReactor:eigenvalueTimeScales:TooManyArguments',...
+                'The number of arguments must be 0, 2, or 4.');
+    end
+    
+%     Gamma = NaN(1,length(indexTimes));
+    % loop over the time index
+    
+    c = zeros(1,length(indexTimes));
+    omega_c =  zeros(1,length(indexTimes));
+    for k = 1:length(indexTimes)
+        %        
+        y = obj.massFractions(:,indexTimes(k));
+        [~,F] = obj.sensitivitY([obj.temp(indexTimes(k));y]);   
+        
+        c(k) = sum(y(indx));
+        omega_c(k) = sum(F(indx));
+    end   
+end
+ 
+% tau = abs((c(2:end)-c(1))./(omega_c(2:end)-omega_c(1:end-1))); 
+tau = abs((c(1:end)-c(1))./omega_c); 
+obj.lambda = tau;
+% output
+switch nargout
+    case 0
+        figure      
+        loglog(obj.times,tau,'m.');
+        hold on
+
+    case 1
+        varargout{1} =  obj;
+    case 2        
+        varargout{1} = progress;
+        varargout{2} = tau;
+    otherwise
+        % 
+end
+end
+ 
+ 
+
+
+
+function varargout = ijts(obj,flag1,val1)
+% Old time scale definition 
+% Computes the Timescales by approximating the EV by the diagonal of DF and
+% scale them by F
+% (c) 2012 U.P. for VIRTUHCON
+
+% epsilon = 0 <=> all time scales counts
+% can be overwritten by parameter
+ 
+% set the default species selection strategy
+
+epsilon = 1e-2;
+indexTimes = 1:length(obj.times);
+obj.lambda = [];
+
+if isempty(obj.massFractions)
+    error('batchReactor:fullTimeScale:emptyMassFractions',...
+        ['The mass fraction property is empty',...
+        ' you shold solve the reactor first before',...
+        ' trying to compute time scales.'])
+else   
+    switch nargin
+        case 1
+            % without additional parameters
+        case 3
+            switch flag1
+                case 'step'
+                    if length(val1)>1
+                        indexTimes = getTimesIndex(obj,val1 );
+                    else
+                        indexTimes = 1:val1:length(obj.times);
+                        fprintf(['Take every ',num2str(val1),'-th timestep, ',...
+                            'i.e. evaluate ',num2str(length(indexTimes)),' points\n'])
+                    end   
+                case {'eps' 'epsilon'}
+                    epsilon = val1;
+                   
+                otherwise
+                   error('batchReactor:eigenvalueTimeScales:UnkownProperty',...
+                        ['The property ',flag1,' is unknown.' ]);  
+            end            
+        otherwise
+            % Hmmmm????
+            error('batchReactor:eigenvalueTimeScales:TooManyArguments',...
+                'The number of arguments must be 0, 2, or 4.');
+    end
+    Gamma = NaN(obj.nSpecies,length(obj.times));
+    tau = NaN(obj.nSpecies,length(obj.times));
+%     Gamma = NaN(1,length(indexTimes));
+    % loop over the time index
+    for k = 1:length(indexTimes)
+        %        
+        y = obj.massFractions(:,indexTimes(k));
+        [DF,F] = obj.sensitivitY([obj.temp(indexTimes(k));y]);          
+        d = abs(diag(DF));     
+        indx = find(abs(F)/max(abs(F))>=epsilon);                
+        Gamma(1:length(indx),k) = 1./abs(d(indx)); 
+        tau(:,k) = abs(1./d);       
+    end   
+    obj.lambda = abs(Gamma);
+end
+
+% output
+switch nargout
+    case 0
+% do nothing
+    case 1
+        varargout{1} = obj;
+    case 2        
+        varargout{1} = tau;
+        varargout{2} = obj.lambda;
+    otherwise
+        % 
+end
+end
+ 
+ 
+
+
+
+function [varargout] = findSpecies(obj,pattern)
+% gives all species back where patter is found in there name
+splistIn = obj.speciesNames;
+l = 0;
+if isa(pattern,'char')
+    for kk = 1:length(splistIn)
+       if ~isempty(strfind(splistIn{kk},pattern))
+            l = l + 1;
+            splistOut{l} = splistIn{kk};
+            indexList(l) = kk;
+        end
+    end    
+elseif isa(pattern,'cell')
+    for k = 1:length(pattern)
+        for kk = 1:length(splistIn)
+            if ~isempty(strfind(splistIn{kk},pattern{k}))
+                l = l + 1;
+                splistOut{l} = splistIn{kk};
+                indexList(l) = kk;
+            end
+        end
+    end
+else
+    error('findSpecies:WrongArgumentType','The argument should be a string or a cell array of strings')
+end
+switch nargout
+    case 0
+       % 
+    case 1    
+        varargout{1} = splistOut;
+        
+    case 2
+        varargout{1} = splistOut;
+        varargout{2} = indexList;
+    
+    otherwise
+endfunction varargout = meanTemperature(obj)
+            % t_mean =  obj.meanTemperature 
+            % computes the mean temperature of a flame1d object
+            % by t_mean = \int_x_0^x_1 T dx / \int_x_0^x_1 1 dx.
+            if isempty(obj.temp) || isempty(obj.times)
+                error('batchReactor:meanTemperature:emptyTemp',...
+                    'Before computing the location of the flame you must compute the temperature.')
+            else
+                h = obj.times(2:end)-obj.times(1:end-1);               
+                mT = 0.5/(max(obj.times)-min(obj.times))*h*(obj.temp(1:end-1)+obj.temp(2:end))';
+                switch nargout
+                    case 0 
+                        fprintf(['\t mean temperature = ',num2str(mT),' K \n']);
+                    case 1                        
+                        varargout{1} = mT;                    
+                    otherwise
+                        error('batchReactor:meanTemperature:tooManyOutputs',...
+                            'Too many output arguments, try >>help meanTemperature.')
+                end                       
+            end 
+        endfunction plotDens(obj)
+% plots the temperarture over time
+switch nargin
+    case 1
+        plot(obj.times,obj.dens);
+    case 2
+        try
+            plot(obj.times,obj.dens,optional);
+        catch ME
+            fprintf(['The argument of plotTemp may be not correct,',...
+                ' check the result...\n The excemtions was:\n ',ME.message,'\n'])            
+            plot(obj.times,obj.dens);
+        end
+    otherwise
+end
+xlabel('time [s]','FontSize',14);
+ylabel('density [g/cm^3]','FontSize',14);
+endfunction plotMassFractions(obj,arg,marker)
+%plotMassFractions(obj[,n[,marker]])
+%   plots the mass fractions over the time or 1D space
+% The optional argument can be  a cell
+% array containing the species names or a vektor of indecies of the
+% species to be plottet.. If no argument is given, the six "most active" species
+% are selected for plotting.
+% The optional argument marker can be every charakter from the following
+%  b     blue          .     point              -     solid
+%  g     green         o     circle             :     dotted
+%  r     red           x     x-mark             -.    dashdot 
+%  c     cyan          +     plus               --    dashed   
+%  m     magenta       *     star             
+%  y     yellow        s     square
+%  k     black         d     diamond
+%  w     white         v     triangle (down)
+%                      ^     triangle (up)
+%                      <     triangle (left)
+%                      >     triangle (right)
+%                      p     pentagram
+%                      h     hexagramsuitable 
+
+% switch obj.reactor
+%     case {'tibox' 'constVolumeReactor' 'commonReactor' 'constPressReactor' 'constPressNetReactor'...
+%             'reactorNet' 'constVolumeNetReactor'}
+%        obj.times = obj.times;  
+%     case 'counterFlowFlame'
+%        obj.times = obj.space; 
+%     otherwise
+%         warning('plotmassFractions:unknownReactor','The reactor is unknown. Assume a 0D problem. Good luck.')
+% end
+
+  
+
+
+   
+if nargin==3
+    % the argument can be the number of species to be plottet or a cell
+    % array containing the species names or a vektor of indecies of the
+    % species to be plottet...    
+     
+    if isempty(arg)
+        [m] = max(obj.massFractions,[],2);
+        [~,indx] = sort(m,'descend');
+        if length(indx)>=5
+           indx = indx(1:6);
+        elseif length(indx)>=1
+            % indx = indx
+        else
+            % error case
+            warning('plotMassFractions:NoFractions',...
+                'The massFractions property is empty, exit without plotting.')
+            return
+        end
+        arg = 1; % make arg numeric
+    elseif isnumeric(arg)
+         [m] = max(obj.massFractions,[],2);
+         [~,indx] = sort(m,'descend');
+         indx = indx(1:arg);
+    end
+    if isa(arg,'numeric')
+        f = semilogx(obj.times,obj.massFractions(indx,:),marker);
+        h = legend(makeNiceSpeciesNames(obj.speciesNames(indx)));        
+    elseif isa(arg,'cell')&&isa(arg{1},'char')
+        f = semilogx(obj.times,obj.getMassFractionsByName(arg),marker);
+        h = legend(makeNiceSpeciesNames(arg));     
+         
+    elseif isa(arg,'char')
+        f = semilogx(obj.times,obj.getMassFractionsByName(arg),marker);
+        h = legend(makeNiceSpeciesNames(arg));         
+    else
+        warning('plotMassFractions:WrongInput','The input must be a cell or a vektor of indices')
+        %
+    end
+%     set(h,'Interpreter','TeX','Box', 'on','FontSize',10,'Location','Best');
+elseif nargin==2 % call with species specifies
+    % the argument can be the number of species to be plottet or a cell
+    % array containing the species names or a vektor of indecies of the
+    % species to be plottet...
+     
+    if isempty(arg)
+        [m] = max(obj.massFractions,[],2);
+        [~,indx] = sort(m,'descend');
+        if length(indx)>=5
+           indx = indx(1:6);
+        elseif length(indx)>=1
+            % indx = indx
+        else
+            % error case
+            warning('plotMassFractions:NoFractions',...
+                'The massFractions property is empty, exit without plotting.')
+            return
+        end
+        arg = 1; % make arg numeric
+    elseif isnumeric(arg)
+         [m] = max(obj.massFractions,[],2);
+         [~,indx] = sort(m,'descend');
+         indx = indx(1:arg);         
+    end
+    if isa(arg,'numeric')
+        f = semilogx(obj.times,obj.massFractions(indx,:));
+        h = legend(makeNiceSpeciesNames(obj.speciesNames(indx)));        
+    elseif isa(arg,'cell')&&isa(arg{1},'char')
+        f = semilogx(obj.times,obj.getMassFractionsByName(arg));
+        h = legend(makeNiceSpeciesNames(arg));         
+    elseif isa(arg,'char')
+        f = semilogx(obj.times,obj.getMassFractionsByName(arg));
+        h = legend(makeNiceSpeciesNames(arg));         
+    else
+        warning('plotMassFractions:WrongInput','The input must be a cell or a vektor of indices')
+        %
+    end
+%     set(h,'Interpreter','TeX','Box', 'off','FontSize',18,'Location','Best');
+else % pure call
+    [m] = max(obj.massFractions,[],2);
+    [~,indx] = sort(m,'descend');
+    indx = indx(1:min(6,size(obj.massFractions,1))); 
+    f = semilogx(obj.times,obj.massFractions(indx,:));
+    h = legend(makeNiceSpeciesNames(obj.speciesNames(indx)));
+    
+end
+title('MassFractions','FontSize',18);
+xlabel('t [s]','FontSize',18); 
+ylabel('Y','FontSize',18);
+set(gca,'FontSize',18);
+set(f,'LineWidth',2);
+set(h,'Interpreter','TeX','Box', 'on','FontSize',18,'Location','Best','EdgeColor','w');
+
+
+
+
+
+    function str = makeNiceSpeciesNames(str)
+        if isa(str,'cell')
+            for k = 1:length(str)
+                            str{k} = makeSubscriptSpecies(str{k});
+            end
+        elseif isa(str,'char')
+            str = makeSubscriptSpecies(str);
+        else
+                % hmmmm...?
+        end
+        function str = makeSubscriptSpecies(str)
+            strd = [];
+            l = 1;
+            while l <= length(str)                
+                if double(str(l))>=48 && double(str(l))<=57 
+                    strd = [strd,'_{'];
+                    while l <= length(str)                       
+                        if double(str(l))>=48 && double(str(l))<=57 && l< length(str)
+                            strd = [strd, str(l)];
+                            l = l+1;  
+                        elseif double(str(l))>=48 && double(str(l))<=57 && l == length(str)
+                            strd = [strd,str(l),'}'];
+                            l = l+1;                            
+                            break
+                        else
+                            strd = [strd,'}'];                             
+                            break
+                        end
+                    end
+                else
+                   strd = [strd,str(l)];
+                   l = l+1;
+                end
+                
+            end
+            str = upper(strd);
+        end
+    end
+
+end
+
+function plotMoleFractions(obj,arg,marker)
+%plotMoleFractions(obj[,n[,marker]])
+%   plots the mole fractions over the time or 1D space
+% The optional argument the species names or a vektor of indecies of the
+% species to be plottet.. If no argument is given, the six "most active" species
+% are selected for plotting.
+% The optional argument marker can be every charakter from the following
+%  b     blue          .     point              -     solid
+%  g     green         o     circle             :     dotted
+%  r     red           x     x-mark             -.    dashdot 
+%  c     cyan          +     plus               --    dashed   
+%  m     magenta       *     star             
+%  y     yellow        s     square
+%  k     black         d     diamond
+%  w     white         v     triangle (down)
+%                      ^     triangle (up)
+%                      <     triangle (left)
+%                      >     triangle (right)
+%                      p     pentagram
+%                      h     hexagramsuitable 
+
+  
+
+
+   
+if nargin==3
+    % the argument can be the number of species to be plottet or a cell
+    % array containing the species names or a vektor of indecies of the
+    % species to be plottet...    
+     
+    if isempty(arg)
+        [m] = max(obj.moleFractions,[],2);
+        [~,indx] = sort(m,'descend');
+        if length(indx)>=5
+           indx = indx(1:6);
+        elseif length(indx)>=1
+            % indx = indx
+        else
+            % error case
+            warning('plotMoleFractions:NoFractions',...
+                'The moleFractions property is empty, exit without plotting.')
+            return
+        end
+        arg = 1; % make arg numeric
+    elseif isnumeric(arg)
+         [m] = max(obj.moleFractions,[],2);
+         [~,indx] = sort(m,'descend');
+         indx = indx(1:arg);
+    end
+    if isa(arg,'numeric')
+        plot(obj.times,obj.moleFractions(indx,:),marker);
+        h = legend(makeNiceSpeciesNames(obj.speciesNames(indx)));        
+    elseif isa(arg,'cell')&&isa(arg{1},'char')
+        plot(obj.times,obj.getMoleFractionsByName(arg),marker);
+        h = legend(makeNiceSpeciesNames(arg));     
+         
+    elseif isa(arg,'char')
+        plot(obj.times,obj.getMoleFractionsByName(arg),marker);
+        h = legend(makeNiceSpeciesNames(arg));         
+    else
+        warning('plotMoleFractions:WrongInput','The input must be a cell or a vektor of indices')
+        %
+    end
+    set(h,'Interpreter','TeX','Box', 'on','FontSize',10,'Location','Best');
+elseif nargin==2 % call with species specifies
+    % the argument can be the number of species to be plottet or a cell
+    % array containing the species names or a vektor of indecies of the
+    % species to be plottet...
+     
+    if isempty(arg)
+        [m] = max(obj.moleFractions,[],2);
+        [~,indx] = sort(m,'descend');
+        if length(indx)>=5
+           indx = indx(1:6);
+        elseif length(indx)>=1
+            % indx = indx
+        else
+            % error case
+            warning('plotMoleFractions:NoFractions',...
+                'The moleFractions property is empty, exit without plotting.')
+            return
+        end
+        arg = 1; % make arg numeric
+    elseif isnumeric(arg)
+         [m] = max(obj.moleFractions,[],2);
+         [~,indx] = sort(m,'descend');
+         indx = indx(1:arg);         
+    end
+    if isa(arg,'numeric')
+        plot(obj.times,obj.moleFractions(indx,:));
+        h = legend(makeNiceSpeciesNames(obj.speciesNames(indx)));        
+    elseif isa(arg,'cell')&&isa(arg{1},'char')
+        plot(obj.times,obj.getMoleFractionsByName(arg));
+        h = legend(makeNiceSpeciesNames(arg));         
+    elseif isa(arg,'char')
+        plot(obj.times,obj.getMoleFractionsByName(arg));
+        h = legend(makeNiceSpeciesNames(arg));         
+    else
+        warning('plotMoleFractions:WrongInput','The input must be a cell or a vektor of indices')
+        %
+    end
+    set(h,'Interpreter','TeX','Box', 'on','FontSize',10,'Location','Best');
+else % pure call
+    [m] = max(obj.moleFractions,[],2);
+    [~,indx] = sort(m,'descend');
+    indx = indx(1:6); 
+    plot(obj.times,obj.moleFractions(indx,:));
+    h = legend(makeNiceSpeciesNames(obj.speciesNames(indx)));
+    set(h,'Interpreter','TeX','Box', 'on','FontSize',10,'Location','NorthEastOutside');
+end
+title('MoleFractions','FontSize',14);
+xlabel('T [s]','FontSize',14); 
+ylabel('X','FontSize',14);
+set(gca,'FontSize',14);
+
+
+
+
+
+
+
+    function str = makeNiceSpeciesNames(str)
+        if isa(str,'cell')
+            for k = 1:length(str)
+                            str{k} = makeSubscriptSpecies(str{k});
+            end
+        elseif isa(str,'char')
+            str = makeSubscriptSpecies(str);
+        else
+                % hmmmm...?
+        end
+        function str = makeSubscriptSpecies(str)
+            strd = [];
+            l = 1;
+            while l <= length(str)                
+                if double(str(l))>=48 && double(str(l))<=57 
+                    strd = [strd,'_{'];
+                    while l <= length(str)                       
+                        if double(str(l))>=48 && double(str(l))<=57 && l< length(str)
+                            strd = [strd, str(l)];
+                            l = l+1;  
+                        elseif double(str(l))>=48 && double(str(l))<=57 && l == length(str)
+                            strd = [strd,str(l),'}'];
+                            l = l+1;                            
+                            break
+                        else
+                            strd = [strd,'}'];                             
+                            break
+                        end
+                    end
+                else
+                   strd = [strd,str(l)];
+                   l = l+1;
+                end
+                
+            end
+            str = upper(strd);
+        end
+    end
+
+end
+
+function plotPress(obj,optional)
+% plots the temperarture over time
+switch nargin
+    case 1
+        plot(obj.times,obj.pres/oneatm);
+    case 2
+        try
+            plot(obj.times,obj.pres/oneatm,optional);
+        catch ME
+            fprintf(['The argument of plotTemp may be not correct,',...
+                ' check the result...\n The excemtions was:\n ',ME.message,'\n'])            
+            try
+                plot(obj.times,obj.pres/oneatm);
+            catch ME
+                throw ME
+            end
+        end
+    otherwise
+        error('batchReactor:plotPress:tooManyArguments',...
+            'Too many arguments. Only one plot argument is allowed')
+end
+xlabel('t [s]','FontSize',16);
+ylabel('p [Atm]','FontSize',16);
+end
+function plotTemp(obj,optional)
+% plots the temperarture over time
+switch nargin
+    case 1
+        plot(obj.times,obj.temp);
+    case 2
+        try
+            plot(obj.times,obj.temp,optional);
+        catch ME
+            fprintf(['The argument of plotTemp may be not correct,',...
+                ' check the result...\n The excemtions was:\n ',ME.message,'\n'])            
+            plot(obj.times,obj.temp);
+        end
+    otherwise
+end
+xlabel('time [s]','FontSize',14);
+ylabel('temperature [K]','FontSize',14);
+endfunction varargout = pvts(obj,species)
+% Computes the progress variable time scale defined in Ihme/Pitsch
+% obj = obj.timeScaleProgressVariable(species)
+% species must be a cell array containig the names of the species defining
+% the progress variable, e.g. the species of the main reaction.
+% Example:
+%  obj= obj.timesScaleProgressVariable({'CH4' 'O2'});
+%  obj= obj.timesScaleProgressVariable() uses the  main species, i.e. the
+%  species with the largest value of mole fraction.
+% (c) 2012 U.P. for VIRTUHCON
+
+% epsilon = 0 <=> all time scales counts
+% can be overwritten by parameter
+ 
+% set the default species selection strategy
+
+ME = MException('batchReactor:timeScaleProgressVariable:emptyMassFractions',...
+        ['The mass fraction property is empty',...
+        ' you shold solve the reactor first before',...
+        ' trying to compute time scales.']); 
+
+
+if ~isempty(obj.moleFractions)
+    indx = obj.mainSpecies(min(1,size(obj.moleFractions,1)),'mole');
+elseif ~isempty(obj.massFractions)
+    indx = obj.mainSpecies(min(1,size(obj.massFractions,1)),'mass');     
+else
+     throw(ME);
+end
+
+ 
+indexTimes = 1:length(obj.times);
+ 
+obj.lambda = [];
+
+if isempty(obj.massFractions)
+    throw(ME);
+else   
+    switch nargin
+        case 1
+            % without additional parameters
+        case 2
+           try
+                indx = obj.getSpeciesIndexByName(species);
+           catch ME
+                throwAsCaller(ME);
+            end
+        otherwise
+            % Hmmmm????
+            error('batchReactor:eigenvalueTimeScales:TooManyArguments',...
+                'The number of arguments must be 0, 2, or 4.');
+    end
+    
+%     Gamma = NaN(1,length(indexTimes));
+    % loop over the time index
+    
+    
+     
+    domega = zeros(length(indx),length(indexTimes)-1);
+    yk = obj.massFractions(:,indexTimes(1:end-1));
+    yk1 = yk;
+    yk1(indx,:) = obj.massFractions(indx,indexTimes(2:end));    
+    for k = 1:length(indexTimes)-1
+        % reconstruct the source term   
+        
+        [~,omega1] = obj.sensitivitY([obj.temp(indexTimes(k));yk1(:,k)]);
+        [~,omega]  = obj.sensitivitY([obj.temp(indexTimes(k));yk(:,k)]);
+        domega(:,k) = omega1(indx,:)-omega(indx,:);       
+    end
+     
+    dy =(obj.massFractions(indx,indexTimes(2:end))...
+        -obj.massFractions(indx,indexTimes(1:end-1))).^2;
+    tau =  sqrt(sum(dy)./sum(domega.^2,1)); 
+    obj.lambda = [ tau(1) tau];    
+end
+
+% output
+
+switch nargout
+    case 0
+    case 1
+        varargout{1} =  tau;    
+    otherwise
+        % 
+end
+end
+ 
+ 
+
+
+
+function   a  = readTiboxC(pathToFile)
+%a  = readTiboxC(pathToFile)
+% Imports a tibox output *.c-file and converts the strings to numericals.
+% In the 1st. line, the header of the "concentration" table is assumed. All
+% date is written in line-format, i.e. the time vector and the
+% "concentrations" are the lines of the a.data field.
+
+fid = fopen(pathToFile,'r');
+titleline = fgetl(fid);
+j = 1;
+in = false;
+stringE = [];
+for k = 1:length(titleline)
+    if ~strcmp(titleline(k),' ')
+        stringE = [stringE,titleline(k)];
+        in = true;
+    elseif strcmp(titleline(k),' ')&& in
+        title{j} = stringE;
+        stringE = [];
+        in = false;
+        j = j+1;
+    end
+    title{j} = stringE; % the last in the list
+end
+
+a.title = title;
+
+k = 1;
+while 1
+    cline = fgetl(fid);
+    if ~ischar(cline)
+        break
+    else
+        a.data(:,k) = str2num(cline); %#ok<ST2NM>
+        k = k+1;
+    end
+end
+
+st = fclose('all');
+if st == -1
+    error('readTiboxC:ErrorClosingFIle','An error occcues when closing the c-file')
+end
+
+end
+
+function [out1,out2] = sensitivitY(obj,y)
+% dfdy = obj.sensitivitY(y) computes the Jacobian of the rhs at y for the 
+% RHS of the batchRector class with respect to Y.
+% Usuage: Jac = obj.sensitivitY(Z])  Z must befit the requrenments of
+% obj.reactor , eg. [E,Vol,Y] for common reactor, [T,Y] for all other
+% reactors.
+% It uses Matlab's numJacODE function, and the set of arguments used by
+% conhp, conuv etc.
+% It checks the reactor propertie of the batchReactor object to deside wich
+% RHS is valid. Possible Values are 'constPressReactor',  'constPressNetReactor',
+% 'constVolumeReactor', and  'constVolumeNetReactor'.
+% 'commonReactor' and 'tibox' are NOT (jet) valid.
+%
+% (c) 2011 U.P. for VIRTUHCON
+
+options = odeset('RelTol',1.e-5,'AbsTol',1.e-12,'Stats','off');
+switch obj.reactor
+    case {'constPressReactor'  'constPressNetReactor'}
+        dfdy = numJacODE(@obj.conhp,0,y,options);
+        f = obj.conhp(0,y);
+        dfdy(:,1) = [];  dfdy(1,:) = [];
+        f(1) = [];
+        
+    case {'constVolumeReactor'  'constVolumeNetReactor' }
+         dfdy = numJacODE(@obj.conuv,0,y,options);
+         f = obj.conuv(0,y);
+        dfdy(:,1) = [];  dfdy(1,:) = [];
+        f(1) = [];
+    case 'constTempReactor'
+        % remove temperature from solution vector, this is for
+        % compatibility reasons...
+        y = y(2:end);
+        dfdy = numJacODE(@obj.conht,0,y,options);
+        f = obj.conht(0,y);    
+    case 'commonReactor'
+        % here y must be [E,Vol,Y] !!!!
+        setMassFractions(obj.gas,y(2:end));
+        set(obj.gas,'T',y(1));
+        y(1) = intEnergy_mass(obj.gas);
+        y(3:end+1) = y(2:end);
+        y(2) = 1./density(obj.gas);       
+        
+        dfdy = numJacODE(@obj.creactor,0,y,options);
+        f = obj.creactor(0,y);     
+        dfdy(:,1:2) = [];  dfdy(1:2,:) = [];
+        f(1:2) = [];
+    otherwise
+        error('batchReactor:jacobi:unknownReactor',...
+            'The type of the reactor is unknown.')
+end
+switch nargout
+    case  0
+      % do nothing
+    case 1
+        out1 = dfdy;
+    case 2
+         out1 = dfdy;
+         out2 =  f; 
+    otherwise
+        % matlab error?
+
+end
+
+
+end
+function M = sensitivityMatrix(obj,t)
+indx = obj.getTimesIndex(t);
+M = obj.sensitivitY([obj.temp(indx);obj.massFractions(:,indx)]);
+endfunction obj = setDens(obj,dens)
+% Sets the dens vector, empty argument clears the 
+% times property
+% obj = obj.setDens(times)
+% obj = setDens()
+if nargin==2
+    obj.dens = dens;
+else
+    obj.dens = [];
+end
+endfunction obj = setInitialMoleFractions(obj,names,values)
+% obj = obj.importFractions(names,values)
+obj.initialMoleFractions = vector2CanteraString(names,values); 
+end
+function obj = setInitialMassFractions(obj,names,values)
+% obj = obj.setMassFractions(names,values)
+% this function sets the initial mass fraction property,
+% Example:
+%   obj = obj.setMassFractions({'H2 O2'},[1 2]);
+obj.initialMassFractions = vector2CanteraString(names,values); 
+endfunction obj = setMoleFractions(obj,names,values)
+% obj = obj.importFractions(names,values)
+obj.initialMoleFractions = vector2CanteraString(names,values); 
+end
+function obj = setPres(obj,pres)
+% Sets the pres vector, empty argument clears the 
+% pres property
+% obj = obj.setPres(times)
+% obj = setPres()
+if nargin==2
+    obj.pres = pres;
+else
+    obj.pres = [];
+end
+endfunction obj = setTemp(obj,temp)
+% Sets the temp vector, empty argument clears the 
+% temps property
+% obj = obj.setTemp(temps)
+% obj = setTemp()
+if nargin==2
+    obj.temp = temp;
+else
+    obj.temp = [];
+end
+endfunction obj = setTimes(obj,times)
+% Sets the time vector, empty argument clears the 
+% times property
+% obj = obj.setTimes(times)
+% obj = setTimes()
+if nargin==2
+    obj.times = times;
+else
+    obj.times = [];
+end
+endfunction   solve(obj,varargin)
+% obj.solve(['reactorType'])
+% solve the batch reactor defined in obj.reactor or via the optional parameter.
+% If none ist given, commonReactor will be called
+% Examples:
+%     r1.reactor = 'constVolumeReactor';
+%     r1 = solve  
+% solves the contant volume bathc reactor.
+%     r1 = solve('tibox')
+% solves the constant pressure reactor by the tibox programm.  
+switch nargin
+    case 1
+        reactorToCall = obj.reactor; 
+        if isempty(reactorToCall)
+            reactorToCall = ' ';                  
+        end
+    case 2
+        reactorToCall = varargin{1};
+    otherwise
+        ME = MException('batchReactor:solve:WrongNumberInput',...
+            ['Wrong number of input arguments.'...
+            ' Only one additional argument is suppored.']);
+        throwAsCaller(ME);
+        
+end
+%
+switch reactorToCall
+    case 'constVolumeReactor'
+        obj.constVolumeReactor;
+    case 'constVolumeNetReactor'
+        obj.constVolumeNetReactor;
+    case 'constPressReactor'
+        obj.constPressReactor;
+    case 'constPressNetReactor' 
+        obj.constPressNetReactor;  
+    case 'constTempReactor' 
+        obj.constTempReactor;      
+    case 'tibox'                    
+        obj.tibox;
+    otherwise
+        obj.commonReactor;
+end
+% When solve the reactor, the time scales are not longer valid
+obj.lambda = [];
+endfunction obj = solveForIgnition(obj,varargin)
+% obj = obj.solveForIgnition(marker) solves the reactor
+% but w/o the postprocesing of commonReactor.
+% Only times and temp were evaluated and the ignition time is computed.
+% The marker should be a species which marks the ignition, like e.g. OH
+obj.reactor = 'commonReactor';
+obj = obj.clearFractions;
+if  isa(obj.mechanism,'char') && isempty(obj.gas)
+    obj.gas = IdealGasMix(obj.mechanism)  ;
+    fprintf('chemistry.constVolumeReactor: Make obj.gas object\n')
+elseif ~isIdealGas(obj.gas)   
+    error('obj.gas is not an Ideal Gas Mix')
+end
+
+if isempty(obj.initialMoleFractions)
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'Y',obj.initialMassFractions);
+else
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure,'X',obj.initialMoleFractions);
+end
+ 
+y0 = [intEnergy_mass(obj.gas)
+    1.0/density(obj.gas)
+    massFractions(obj.gas)]; %#ok<*CPROP,*PROP>
+% replaces the default value of 1/10 * (t2-t1)
+
+
+% define the cases
+if isempty(obj.heatflux) && isempty(obj.vdot) && isempty(obj.area)
+    rCases = 1; % adiabatic const volume reactor
+elseif isempty(obj.heatflux) && ~isempty(obj.vdot) && ~isempty(obj.area)
+    rCases = 2; % adiabatic volume changing reactor, area must also be given
+elseif ~isempty(obj.heatflux) && isempty(obj.vdot) && isempty(obj.area)
+    rCases = 3; % non adiabatic const volume reactor
+elseif ~isempty(obj.heatflux) && ~isempty(obj.vdot) && ~isempty(obj.area)
+    rCases = 4; % all "reactor functions" are given
+else
+    rCases = 5; % something like "undefined", eg. vdot but no area given
+end
+ 
+options = odeset('RelTol',1.e-5,'AbsTol',1.e-12,'Stats','off');
+%     'BDF','on','MaxOrder',2);  
+% all cases...
+switch rCases
+    case 1 
+        % use the internal definitions for a adiabatic constant volume reactor         
+        try
+            fprintf('Start ode15s 0%% .')
+            out = ode15s(@reactor_ode,obj.simulationTime,y0,options,obj.gas,@vdot,@area,@heatflux);  
+            fprintf('.. 100%%\n')
+        catch ME
+           throw(ME) 
+        end
+    case 2 
+        % reactor with heatflux, 
+        % for all rCases >1 we reduce the minimal stepsize for
+        % better detecting "jumping" heat fluxes etc.
+               
+        try
+            fprintf('Start ode15s 0%% .')            
+            out = ode15s(@reactor_ode,obj.simulationTime,y0,options,obj.gas,obj.vdot,obj.area,@heatflux);
+            fprintf('.. 100%%\n')
+        catch ME
+           throw(ME) 
+        end
+    case 3 
+        % reactor with changing volume and given area function    
+        try
+            fprintf('Start ode15s 0%% .')
+            out = ode15s(@reactor_ode,obj.simulationTime,y0,options,obj.gas,@vdot,@area,obj.heatflux);
+            fprintf('.. 100%%\n')
+        catch ME
+           throw(ME) 
+        end
+    case 4
+        % reactor with the full set of optional functions     
+       try
+            fprintf('Start ode15s 0%% .')
+            out = ode15s(@reactor_ode,obj.simulationTime,y0,options,obj.gas,obj.vdot,obj.area,obj.heatflux);
+            fprintf('.. 100%%\n')
+        catch ME
+           throw(ME) 
+        end
+    case 5
+        % only vdot given        
+        try       
+            fprintf('Start ode15s 0%% .')      
+            out = ode15s(@reactor_ode,obj.simulationTime,y0,options,obj.gas,obj.vdot,@area,@heatflux);            
+            fprintf('.. 100%%\n')
+        catch ME          
+           throw(ME)
+        end
+    otherwise
+        fprint('You should never see this message, from now some very stange things may happen\n')
+end
+
+
+% simple postprocessing
+
+obj.times = out.x ;
+obj.vol = out.y(2,:);
+obj.massFractions = out.y(3:end,:);
+if nargin==1
+    marker = 'OH';   
+    fprintf(['solveForIgnition: Use species >OH< as marker for ignition.\n ']);
+else
+    marker = varargin{1}; 
+    [~,in] = obj.lookForSpecies(marker);
+    if isempty(in)
+        ME = MException('solveForIgnition:MarkerNotFound',...
+            ['The marker species >',marker,'< is not in the mechanism.']);
+        throw(ME)
+    else
+        fprintf(['solveForIgnition: Use species ',marker,...
+        ' as marker for ignition.\n ']);
+    end
+end
+
+try 
+    marker_fractions = obj.getMassFractionsByName (marker);
+catch ME
+    ME.identifier
+    throw(ME)
+end
+
+dOH = dot(obj.times,marker_fractions);
+[~,indx] = max(dOH(1,:),[],2);
+obj.ignt = obj.times(1,indx(1));
+% 
+
+ 
+
+
+ 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% some local functions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% 
+
+% local functions, defining the reactor
+    function v = vdot(~, ~, ~)
+    %prameter vdot(t, vol, gas)
+        v = 0.0;                                    % uncomment for constant volume
+        % v = 1.e11 * (pressure(obj.gas) - 101325.0);    % holds pressure very
+        % close to 1 atm
+    end
+%  heat flux (W/m^2).
+    function q = heatflux(~,~)
+        q = 0.0;                                    % adiabatic
+    end
+% surface area (m^2). Used only to compute heat transfer.
+    function a = area(~,~)
+        a = 1.0;
+    end
+% the first derivative of d value /d time, computed by central
+% differences
+    function dt = dot(time,value)
+        delta_t = time(2:end)-time(1:end-1);
+        dt = (value(:,2)-value(:,1))./delta_t(1);
+        dt = [dt,(value(:,3:end)-value(:,1:end-2))*diag(1./(delta_t(1:end-1)+delta_t(2:end)))];
+        dt = [dt,(value(:,end)-value(:,end-1))./delta_t(end)];
+    end
+end
+
+function varargout = speciesProductionRates(obj,varargin)
+% Computes the production rates of all or of given
+% species from data at time point given by the vector
+% times.
+%
+% rates = obj.speciesProductionRates
+% rates = obj.speciesProductionRates(times)
+% rates = obj.speciesProductionRates(times,speciesList)
+%
+% (c) 2011 U.P. for VIRTUHCON
+
+timeIndex = 1:length(obj.times);
+speciesIndex = 1:obj.nSpecies;
+
+switch nargin   
+    case 1
+        % use standard values
+    case 2
+        timeIndex =  obj.getTimesIndex(varargin{1});       
+    otherwise  % species list given  
+        if ~isempty(varargin{1})
+            timeIndex =  obj.getTimesIndex(varargin{1});       
+        end
+        speciesIndex = obj.getSpeciesIndexByName(varargin{2});
+        % ignore the rest
+end
+
+rates = zeros(length(speciesIndex),length(timeIndex));
+
+j = 1;
+for k =  timeIndex
+    moleFractions = vector2CanteraString(obj.speciesNames,...
+        obj.moleFractions(:,k));
+    set(obj.gas,'X',moleFractions,'T',obj.temp(k),'P',obj.pres(k));
+    r = netProdRates(obj.gas); 
+    rates(:,j) = r(speciesIndex);
+    j = j+1;
+end
+
+% output
+switch nargout
+    case 0 % graphical output
+        figure
+        ratesIndex = 1:length(rates(:,1));
+        if nargin<3 % plot only lelevant species rates
+            ratesIndex = ratesIndex(( max(abs(rates'))>1e-8));          
+        end
+        bar3(rates(ratesIndex,:)) 
+        if nargin<3 % the annotation must be adaptet case by case...
+            annotation('textbox',[0,0.0,0,1],'String',...
+                ['Species: ' obj.speciesNames(ratesIndex)],'FontSize',12');
+        else
+            annotation('textbox',[0,0.0,0,1],'String',...
+                ['Species: ' ,varargin{2}],'FontSize',12');
+        end
+        xlabel('time t');
+        ylabel('Species Number');
+        title('Net production rates  over time','FontSize',14);
+    case 1
+        varargout{1} = rates;
+    otherwise
+        %
+        error('batchReactor:speciesProductionRates:tooManyOutputs','The number of output must be zero or one.');
+end
+endfunction varargout = spts(obj,flag1,val1)
+ % Computes the Timescales by measuring the "spead" of the system  
+ % dE/dt = J*E at E(0) = w(T,Y)
+% scale them by F
+% (c) 2012 U.P. for VIRTUHCON
+
+% epsilon = 0 <=> all time scales counts
+% can be overwritten by parameter
+ 
+% set the default species selection strategy
+
+epsilon = 1e-2;
+indexTimes = 1:length(obj.times);
+obj.lambda = [];
+
+if isempty(obj.massFractions)&&isempty(obj.initialMassFractions)
+     MException('batchReactor:fullTimeScale:emptyMassFractions',...
+        ['The mass fraction property is empty',...
+        ' you shold solve the reactor first before',...
+        ' trying to compute time scales.']).throw;
+    
+    
+elseif isempty(obj.massFractions)
+%     fprintf('SPTS: Use initial mass fractions\n');
+    % For static computations we use intiial mass fractions
+    
+        
+    set(obj.gas,'T',obj.initialTemperature,'P',obj.initialPressure);                
+    set(obj.gas,'Y',obj.initialMassFractions); 
+     
+    [DF,F] = obj.sensitivitY([obj.initialTemperature;obj.initialMassFractions]);         
+    nf = norm(F,2);
+    temptau = DF*F; 
+
+    if  norm(temptau)<1e-16||nf<1e-16
+        Gamma = NaN;
+    else         
+         
+        tau = 1./abs(temptau);
+        Gamma =  nf/norm(temptau);
+    end
+    
+else
+    tau = NaN(obj.nSpecies,length(indexTimes));
+    Gamma = NaN(1,length(indexTimes));
+    for k = 1:length(indexTimes)
+        %   
+
+        y = obj.massFractions(:,indexTimes(k));
+        [DF,F] = obj.sensitivitY([obj.temp(indexTimes(k));y]);         
+        nf = norm(F,2);
+        temptau = DF*F; 
+
+        if  norm(temptau)<1e-6||nf<1e-6
+            Gamma(k) = NaN;
+        else         
+            indx = find(abs(F)/max(abs(F))>epsilon);
+            tau(1:length(indx),k) = 1./abs(temptau(indx));
+            Gamma(k) =  nf/norm(temptau);
+        end
+    end   
+end 
+
+ 
+
+% loop over the time index
+
+obj.lambda =  Gamma;
+ 
+
+% output
+switch nargout
+    case 0
+        % doin' nothing  
+    case 1
+        varargout{1} = obj;
+    case 2
+        varargout{1} = tau;
+        varargout{2} = Gamma;
+    
+    otherwise
+        % 
+        ME = MException('batchReactor:timeScaleJacobi:WrongNumberOutput',...
+            'The number of output arguments must be lesser than three.');
+        throw(ME);
+end
+end
+ 
+ 
+
+
+
+function obj = tibox(obj)
+%obj = tibox(obj)
+% Wrapper method to call tibox from matlab.
+% It creates the structures needed by tibox including the scenery file,
+% solves the problem by calling tibox and read the output from the *.c file
+%
+
+% tiboxpath MUST be set in the global script
+
+tiboxpath = '~/tiboxbin/';
+fprintf('\nThis is tibox called by batchReactor.tibox\n')
+fprintf('Integrates the kinetic differential equations.\n')
+fprintf('Authors: Tibox(R)  was written originally by T.Nagy (C) 2010, only the Matlab wrapper was added by U.Pruefert\n')
+fprintf('\n')
+if isempty(tiboxpath)
+    error('tibox:NoToboxPath','There is no tiboxpath set.')
+end
+% define the reactor field
+obj.reactor = 'tibox';
+obj = obj.clearFractions;
+
+% current path. For windows maschines we use this as the base folder, For
+% LINUX maschines we will use the users home ~/
+cpath = pwd;
+
+% first part: preparations
+% creating a LOCAL tibox folder
+
+% 1.1 create some directories, and copy some files...
+% we use xcd, which
+
+% cd should be system independent
+if isunix
+%     [success,message,messageID] = xcd('~/');
+    [success,message,messageID] = xcd(cpath);
+    
+elseif ispc
+    [success,message,messageID] = xcd(cpath);
+end
+if ~success
+    error(messageID,message)
+end
+% mkdir is also  system independent
+[success,message,messageID] = mkdir('mtibox');
+if ~success
+    error(messageID,message)
+end
+% copy the tibox & trans programs
+if isunix   
+    [success,message,messageID] = copyfile([tiboxpath,'tibox'],'mtibox');
+    if ~success
+        error(messageID,message)
+    end
+    [success,message,messageID] = copyfile([tiboxpath,'trans'],'mtibox'); 
+    if ~success
+        error(messageID,message)
+    end
+elseif ispc
+    [success,message,messageID] = copyfile([tiboxpath,'tibox.exe'],'mtibox');
+     
+    if ~success
+        error(messageID,message)
+    end
+    [success,message,messageID] = copyfile([tiboxpath,'trans.exe'],'mtibox'); 
+    if ~success
+        error(messageID,message)
+    end    
+else
+    error('tibox:UnsupportetOS','The matlab version of tibox only supports Linux/Unix and Windows systems')
+end
+
+%preparing the folders for tibox
+[success,message,messageID] = xcd('mtibox');
+if ~success
+    error(messageID,message)
+end
+[success,message,messageID] = mkdir('IN');
+if ~success
+    error(messageID,message)
+end
+[success,message,messageID] = mkdir('IN/SCEN');
+if ~success
+    error(messageID,message)
+end
+[success,message,messageID] = mkdir('OUT');
+if ~success
+    error(messageID,message)
+end
+[success,message,messageID] = mkdir('OUT/CONC');
+if ~success
+    error(messageID,message)
+end
+
+% we need a copy of the mechanism in the tibox folder: We create as doft
+% link to the mechanism file an name it mechanism.inp
+% THIS MUST BE A CHEMKIN FILE!!!
+% 
+
+if isunix
+    [status,result] = system(['ln -s -f ',obj.mechanism(1:end-3),'inp',' mechanism.inp']);
+elseif ispc
+    [status,result] = system(['copy /y ',obj.mechanism(1:end-3),'inp',' mechanism.inp']);
+else
+    error('tibox:UnsupportetOS','The matlab version of tibox only supports Linux/Unix and Windows systems')
+end
+    
+if status
+    error('tibox:error',result);    
+else
+    if isunix
+        fprintf(['tibox: linking mechanism.inp ',obj.mechanism,'\n']);
+    else  
+        fprintf('tibox: copy mechanism.inp into the mtibox folder\n');
+    end
+end
+
+% prepare the scen file for tibox
+fid = fopen('IN/SCEN/scenario.scen','w','n','latin1');
+ 
+fprintf(fid,'VERB MKDIR COPY MATRIXINP CONC KINALC JACOBI (T/F)\n');
+fprintf(fid,' F T F T F F F\n');
+fprintf(fid,'START(s),DURATION(s)\n');
+fprintf(fid,'%19.12f %23.8f\n',obj.simulationTime);
+fprintf(fid,'INTPARAMS(h0/s;rtol;atol/(mol/cm^3))\n');
+fprintf(fid,'  1.000000000000000E-010  1.000000000000000E-004  1.000000000000000E-012\n');
+fprintf(fid,'OUTPUT START(s), NUMBER OF OUTPUTS (+=>log,-=>lin)\n');
+fprintf(fid,'  1.000000000000000E-008         -800\n');
+fprintf(fid,'TEMPERATURE(K), PRESSURE(Pa)\n');
+fprintf(fid,'%19.12f %23.8f\n',[obj.initialTemperature,obj.initialPressure]);
+fprintf(fid,'FULL MECHANISM PREFIX(IN/INTERNAL/*. .txt)\n'); 
+% mechanism w/o the file extension!
+% fprintf(fid,[mechname,'\n']); % mechanism w/o the file extension
+fprintf(fid,'mechanism\n');
+fprintf(fid,'MECHANISM FILE(IN/REAC/*.reac or IN/MATR/*.matr)\n');
+% fprintf(fid,[mechname,'\n']); 
+fprintf(fid,'mechanism\n');
+% this is a ~: We do not need any screen output
+fprintf(fid,'SCREEN OUTPUT(list(0-10) can be in more lines, put END to the end)\n');
+fprintf(fid,'END\n');
+% the file output: this is the only line we can chose the output. There is
+% a limitation of the number of outputs what is not in cantera...
+% at least, we write all the initial species in this list
+fprintf(fid,'ASCII FILE OUTPUT(list(0-15) can be in more lines, put END to the end)\n');
+% fprintf(fid,selectSpeciesFromList(obj.initialMoleFractions)) 
+if isempty(obj.speciesNames)
+    warning('tibox:EMptySpeciesList','The List of species for output is empty, use the species from initialMoleFractions');
+    listTheSpecies(fid,selectSpeciesFromList(obj.initialMoleFractions))
+else
+    listTheSpecies(fid,obj.speciesNames)
+end
+fprintf(fid,'END\n');
+% the inital mole fraction, we have to normalize them,...
+species = selectSpeciesFromList(obj.initialMoleFractions); % cell array with the names
+moles = selectMoleFractionsFromList(obj.initialMoleFractions); % double array with the values
+% etsting the data
+if ~length(species)==length(moles)
+    error('tibox:internalError','The number of species do not fit the number of concentrations')
+end
+fprintf(fid,'INITIAL MIXING RATIOS(number(1-20),species,value,metric:pct/ppm/ppb/ppt)\n');
+for k = 1: length(species)
+    fprintf(fid,'   %3s',species{k});    fprintf(fid,'    ');
+    fprintf(fid,'   %10s',num2str(moles(k)));    fprintf(fid,'  pct            \n');
+end
+fclose('all');
+% scenerio file is now written
+
+% perform the the transformation of the mech file into the tibox format by
+% calling trans
+if isunix
+    [status,result] = system('./trans mechanism');
+elseif ispc
+    [status,result] = system('trans mechanism');
+    
+else
+      error('tibox:UnsupportetOS','The matlab version of tibox only supports Linux/Unix and Windows systems')
+end
+if status~=0
+    error('tibox:error',result) 
+else
+    fprintf('tibox: trans runs ... ');
+    fprintf(' successfully ......... 100%%\n')
+    fprintf('\n')  
+end
+
+
+% second part: solve the problem by calling tibox. Tibox writes the result
+% in a file scenario.c
+if isunix
+    [status,result] = system('./tibox scenario');
+elseif ispc
+    [status,result] = system('tibox scenario');
+else
+    error('tibox:UnsupportetOS','The matlab version of tibox only supports Linux/Unix and Windows systems')
+end
+if status~=0    
+    fprintf(['tibox:system call tibox executable: error status: ',...
+        num2str(status),',Message: ',result])    
+else
+    fprintf('tibox: tibox runs ... ');
+    if strcmp(result(end-2:end),'100')
+        fprintf(' successfully......... 100%%\n')
+    else
+        fprintf(' with problems \n')
+        disp(result)
+    end   
+    fprintf('\n')  
+end
+
+
+% third part: red the *.c file and put the data in obj.moleFractions. 
+ try
+    data  = readTiboxC('OUT/CONC/scenario.c');
+    obj.times =  data.data(1,:);
+    obj.pres = data.data(2,:);
+    obj.temp = data.data(3,:);
+    % data  contains possibly doubled species, caused by an error in
+    % tibox:
+    index = checkList(obj.speciesNames,data.title);   
+    obj = obj.setMoleFractions(data.data(index,:));   
+    obj = obj.setMassFractions([]);
+    % the ignition time is defined as argmax(dTemp/dt)
+    [~,indx] = max(dot(obj.times,obj.temp)); 
+    obj.ignt = obj.times(indx);
+    % clear the mass fractions: tibox do not provide them    
+    obj.dens = [];
+catch ME
+    % 
+    fprintf('tibox: ')
+    fprintf(ME.message);
+end
+% [status,result] = system('rm OUT/CONC/scenario.c');
+
+if isunix
+    [success,message,messageID] = xcd('~/');
+elseif ispc
+    [success,message,messageID] = xcd(cpath);
+end
+if ~success
+    error(messageID,message)
+end
+
+
+%
+
+end
+% some  function, well known from e.g. spasityPattern, but with some
+% adaptions
+    function speciesList = selectSpeciesFromList(str) 
+        % extracts species names from the (user input) inital mole fractions
+        % here we use it for selecting the three body from their definiton
+        % sequence what is quite similar to the cantera systax of the mole
+        % fractions
+        speciesList = [];
+        k = 1; % zaehler fuer die position
+        in = true;
+        species = [];
+        for i=1:length(str)        
+            if strcmp(str(i),':')
+                in = false; 
+                speciesList{k} = species;
+                species = [];
+                k = k+1; % next  
+            elseif isLetter(str(i))
+                in = true;
+            end
+            if allowedChar(str(i)) && in
+                species = [species,str(i)];             
+            end
+        end
+    end
+
+% 
+    function moles = selectMoleFractionsFromList(str)
+        % extracts molefractions from the (user input) inital mole
+        % fractions and normalze them (if necessary)
+        speciesMole =[];
+        k = 1; 
+        in = false;
+        for i=1:length(str)   
+            if strcmp(str(i),':')
+                in = true;               
+            end
+            if isnumber(str(i)) && in
+                speciesMole = [speciesMole,str(i)];             
+            end
+            if (strcmp(str(i),',')||i==length(str)) && in                
+                moles(k) = str2double(speciesMole);
+                k=k+1;
+                in = false;
+                speciesMole=[];
+            end
+        end
+        moles = moles/sum(moles);
+    end
+
+    function b = isnumber(char)
+        % checks if char is a number, i.e. it contains '0'...'9' and '.'
+        b = ((double(char)<58 && double(char)>47))||double(char)==46;
+    end
+
+    function b = allowedChar(charSpec)
+    % is it a allowed character in the definietion of a species?   
+    b = (double(charSpec)<91 && double(charSpec)>64) ||...% capitals A...Z
+                (double(charSpec)<123 && double(charSpec)>96) ||...lowercasses a..z
+                (double(charSpec)<59 && double(charSpec)>47) ||... % numbers 0,1...9
+                double(charSpec)==44||... % ,
+                double(charSpec)==95||... % _
+                double(charSpec)==35||... % -
+                double(charSpec)==45||... % -
+                double(charSpec)==43||... % +
+                double(charSpec)==41||... % (
+                double(charSpec)==40;     % )               
+    end
+    
+    function b = isLetter(charSpec)
+        % is it a  letter character (to define a species name, the first must
+        % be a letter, 20H is NOT a well formed species name
+        b = (double(charSpec)<91 && double(charSpec)>64) ||...% capitals A...Z
+            (double(charSpec)<123 && double(charSpec)>96);  % lowercasses a..z
+    end
+
+    function listTheSpecies(fid,list)
+    m = ceil(length(list)/8);
+    r = length(list);
+    n = 1;
+    
+    for k = 1:m,
+        for l = 1:8,
+            if n <= r
+                fprintf(fid,[list{n},'   ']);
+                n = n+1;
+            end
+        end
+        fprintf(fid,'\n');
+    end
+    end
+    
+%     function name = fileNameFromPath(mechanismPath)
+%     j = 0;
+%     m = 0;
+%     for k = 1:length(mechanismPath)
+%         if strcmp(mechanismPath(k),'/')
+%             j = j+1; 
+%             slash(j)=k; 
+%         elseif strcmp(mechanismPath(k),'.')
+%             m=m+1;
+%             dot(m)=k; 
+%         end
+%     end
+%     name = mechanismPath(max(slash)+1:max(dot)-1);    
+%     end     
+    
+    function list = checkList(listA,listB)
+        % checks if a element of  listB is in listA and gives back the index
+        m = length(listA);
+        n = length(listB);
+        list = 1:m;
+        for k = 1:m
+            for l = 1:n
+                if strcmp(listA(k),listB(l))
+                    list(k) = l;                   
+                    break;
+                end
+            end
+        end        
+    end
+    
+    function dt = dot(time,value)
+        delta_t = time(2:end)-time(1:end-1);
+        dt = (value(:,2)-value(:,1))./delta_t(1);
+        dt = [dt,(value(:,3:end)-value(:,1:end-2))*diag(1./(delta_t(1:end-1)+delta_t(2:end)))];
+        dt = [dt,(value(:,end)-value(:,end-1))./delta_t(end)];
+    end
+    
+    
+   function obj = timeScale(obj,type)
+% obj = obj.timeScale(arg)
+% Computes the time scale of type arg 
+% arg can be pvts, gpvts, spts ijts and evts.
+switch type
+    case 'spts'
+        obj = obj.spts();
+    case 'ijts'
+        obj = obj.ijts();
+    case 'evts'
+        obj = obj.evts();
+    case 'pvts'
+        obj = obj.pvts();
+    case 'gpvts'
+        obj = obj.gpvts();
+    otherwise
+        ME = MException('batchReactor:timeScale:unknownArgument',...
+            ['The argument ',char(type),' is not valid.']);
+        throw(ME);        
+end
+end
+
+function varargout = timeScaleCaudalMod(obj,flag1,val1)
+% Eigenvalue based Time Scale inspired by Jean Caudal...
+% In contrast to the original method the mod function uses a different
+% relevance criteria.
+% (c) 2012 U.P. for VIRTUHCON
+% 
+% br.timeScaleCaudalMod(['N',val])
+% Usage: 
+% Input parameter
+% a) empty
+% b) 'N',val
+%  uses val as "crtiteria of relevance" to select N time scales 
+%  After computing the order of reducing the error ||w-sum(a_i*v_i)||
+% Examples
+%  br.timeScaleCaudal('N',3);
+% 
+% Output parameter
+% a) empty plots relevant time scales
+% b) one gives back the batchReactor-object with obj.lambda = Tau
+% c) two [tau,Tau]  where tau are all and Tau are the relevant time scales 
+% Examples
+%  br.timeScaleCaudal('eps',0.01); 
+% plot relevant time scales
+%  br = br.timeScaleCaudal('eps',0.01); 
+% updates the object
+%  [tau,Tau] = br.timeScaleCaudal('eps',0.01);
+%  loglog(br.times,tau,'y.')
+%  hold on
+%  loglog(br.times,Tau,'k.')
+% computes time scales and plots all in yellow and relevant in black 
+% Note eps  = 0 <=> all time scales are relevant
+obj.lambda = [];
+N = 3;
+indexTimes = 1:length(obj.times);
+
+if isempty(obj.massFractions)
+    ME = MException('batchReactor:fullTimeScale:emptyMassFractions',...
+        ['The mass fraction property is empty',...
+        ' you shold solve the reactor first before',...
+        ' trying to compute time scales.']);
+    throw(ME);
+else   
+    switch nargin
+        case 1
+            % without additional parameters
+        case 3
+            switch flag1                
+                case {'N' 'n'}
+                    N = val1;
+                otherwise
+                    ME = MException('batchReactor:timeScaleCaudalMod:UnkownArgument',...
+                        ['The argument ''',flag1,''' is unknown.']); 
+                    throw(ME);
+            end
+        otherwise
+            % Hmmmm????
+            ME = MException('batchReactor:timeScaleCaudalMod:TooManyArguments',...
+                'The number of arguments must be 0 or 2.'); 
+            throw(ME);
+    end
+    tau = zeros(obj.nSpecies,length(indexTimes));   
+%     gamma = zeros(obj.nSpecies,length(indexTimes));   
+     
+    Tau = NaN(1,length(indexTimes));    
+   
+    for k = 1:length(indexTimes)
+        %        
+        [DF,F] = obj.sensitivitY([obj.temp(indexTimes(k));obj.massFractions(:,indexTimes(k))]);    
+        [V,eigenval] = eig(DF,'nobalance');    
+ 
+        l = 1;
+        while l <=obj.nSpecies
+             if isreal(eigenval(l,l))
+                 tau(l,k) = 1/abs(eigenval(l,l));                
+                 l = l+1;
+             else
+                 % complex rule : 
+                 % tau(i) = 1/| Re(lambda)| and 
+                 % tau(i+1) = 1/| Im(lambda) |
+                 tau(l,k) = 1/abs(real(eigenval(l,l)));                
+                 tau(l+1,k) = 1/abs(imag(eigenval(l,l))); 
+                 % put the real and imaginary part of the Eigenvector in
+                 % the new basis V
+                 V(:,l:l+1) = [real(V(:,l)),imag(V(:,l))];
+                 
+                 % jump over the conjugated brother of lambda
+                 l = l+2;
+             end             
+        end
+        % norm the eigenvectors becaus 'no balance" option gives back an
+        % non normed eigenvector basis.
+        V = V*diag(sqrt(1./diag(V'*V)));
+         
+        % V is now real  and normal
+        % compute the coefficients of  omega aka F in basis V  
+        % because of V normal gamma = V\F
+        gamma = V\F;
+         
+        % select gamma  wrt epsilon 
+        indx = greedy_search(F,gamma,V);   
+        Tau(1:N,k)= tau(indx(1:N),k);           
+    end 
+    
+    obj.lambda = Tau;
+   
+    
+end
+% output
+switch nargout
+    case 0
+        % do nothing but plot the timescales
+        loglog(obj.times,Tau,'.')
+    case 1
+        % object output
+        varargout{1} = obj;
+    case 2   
+        % tau/Tau output
+        varargout{1} = tau;
+        varargout{2} = Tau;
+    otherwise
+        % 
+end
+end
+
+function indx = greedy_search(omega,a,v)
+% min (sum (i)) 
+% st.omega - sum a_i*v_i
+% function that gives a "optimal" index vector for the
+% approximation of omega by a linear combination of the
+% sum a_i*v_i
+
+% compute a_i *v_i
+AV = v*diag(a);
+na = length(a);
+y = 0;
+indx = [];
+coeffNr = 1:na;
+abs_minimum = Inf;
+for l = 1:na
+    aa = zeros(1,length(coeffNr));     
+    for k = 1:length(coeffNr)          
+        aa(k) = norm(omega-(y+AV(:,k)))/norm(omega);     
+    end
+    % compute the largest descent
+    [minimum,kk] = min(aa);
+    if minimum>abs_minimum
+       break
+    else
+        abs_minimum = minimum;
+    end
+    y = y+AV(:,kk);
+    indx = [indx coeffNr(kk)];    
+    AV(:,kk) = []; 
+    coeffNr(kk) = [];
+end
+end

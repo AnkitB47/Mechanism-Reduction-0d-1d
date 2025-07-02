@@ -1,0 +1,71 @@
+classdef gm
+% class to solve the optimal control problem defined by L. Petzold/Zhu
+
+properties
+    d;          % the control parameter
+    objective;  % the objective
+    reference;  % the reference object. It defines the problem too   
+    options;    % the options
+end
+
+methods
+    function obj = gm(varargin)
+        % contrictor method for class gm (aka Gradient Method)
+        switch length(varargin)
+                case 0
+                    obj.objective = '';                                  
+                case {1 2}
+                    for k = 1:length(varargin)
+                        switch class(varargin{k})                            
+                            case 'function_handle'
+                                obj.objective = varargin{k};
+                            case {'batchReactor'} % 'flame1d' 'reactorNet'}
+                                obj.reference =    varargin{k};
+                                d = ones(1,nReactions(obj.reference.gas));
+                            otherwise
+                                error('ga:ga:WrongClassOfArguments',...
+                                    ['Arguments must be of class ',...
+                                '''function_handle'' or ''batchReactor''.'])
+                        end
+                        
+                    end                    
+                otherwise
+                    error('ga:WrongNumberOfArguments',...
+                        'The constructor can be called empty or with an individual.')
+        end        
+    end
+    
+    function grad = computeGradient(obj,d)
+        % computes the gradient of J(x(d),T(d)) w.r.t. d
+        % obj must be GM object
+        % compute a solution on the point d
+        % * first off all, set d
+        
+        
+        h = 1e-1;
+        grad = sparse_null(size(d));
+        
+        
+        obj.reference.gas = set(obj.reference.gas,'multiplier',d);
+        % * solve the reactor
+        obj.reference = obj.reference.solve;
+        
+        % we define the objective as the dist function of the reference
+        % object plus some term like 
+        f = feval(obj.objective,obj.reference,obj.reference);
+        for k = 1:length(d)
+            d_k_minus_h = d;
+            d_k_minus_h(k) = (1 - h)*d(k);
+            obj.reference.gas = set(obj.reference.gas,'multiplier',d_k_minus_h);
+            % * solve the reactor for computing f(d-h)
+            obj.reference = obj.reference.solve;
+            f_d_minus_h = feval(obj.objective,obj.reference,obj.reference);
+            grad(k) = (f-f_d_minus_h)/h;
+            %
+        end
+    end
+    
+    function obj = solve(obj)
+    end
+end
+end

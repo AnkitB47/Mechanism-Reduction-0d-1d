@@ -1,0 +1,4 @@
+function obj = setInitialMoleFractions(obj,names,values)
+% obj = obj.importFractions(names,values)
+obj.initialMoleFractions = vector2CanteraString(names,values); 
+end

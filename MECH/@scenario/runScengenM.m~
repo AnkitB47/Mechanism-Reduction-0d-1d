@@ -1,0 +1,56 @@
+function runScengenM(obj,chem)
+% runs scengen to create a set of scenarion files for tibox
+% this is a PURE Matlab version that replaces the call of scengen...
+global tiboxpath
+if isempty(tiboxpath)
+    error('tibox:NoToboxPath','There is no tiboxpath set.')
+end
+% first copy scengen and tibox to the folder mtibox
+if isunix   
+    [success,message,messageID] = copyfile([tiboxpath,'tibox'],'mtibox');
+    if ~success
+        error(messageID,message)
+    end
+    [success,message,messageID] = copyfile([tiboxpath,'trans'],'mtibox'); 
+    if ~success
+        error(messageID,message)
+    end
+    [success,message,messageID] = copyfile([tiboxpath,'scengen'],'mtibox');
+    if ~success
+        error(messageID,message)
+    end
+elseif ispc
+    [success,message,messageID] = copyfile([tiboxpath,'tibox.exe'],'mtibox');    
+    if ~success
+        error(messageID,message)
+    end
+    [success,message,messageID] = copyfile([tiboxpath,'trans.exe'],'mtibox'); 
+    if ~success
+        error(messageID,message)
+    end
+    [success,message,messageID] = copyfile([tiboxpath,'scengen.exe'],'mtibox');
+    if ~success
+        error(messageID,message)
+    end    
+else
+    error('tibox:UnsupportetOS','The matlab version of tibox only supports Linux/Unix and Windows systems')
+end
+% we need a linkt to the mechanism
+pathToMech = chem.mechanism;  
+lastSlash = max(strfind(pathToMech,'/'));
+lastsDdot = max(strfind(pathToMech,'.'));
+
+mechname = pathToMech(lastSlash+1:end)
+
+[status,result] = system(['ln -s ',chem.mechanism,' ','mtibox/',mechname]);
+if status~=0 
+    warning('runScengen:systemCall',result);
+end
+cd mtibox
+[status,result] = system('./scengen scenario');
+% if status~=0 
+%     warning('runScengen:systemCall',result);
+% end
+
+cd ..
+end
