@@ -1,9 +1,0 @@
-function val = J(obj,varargin)
-% objective of the OCP *reduce the number of reactions*
-
-% uses obj.objective for defining the dis function:
-val = eval(obj.obcective);
-
-
-
-end
