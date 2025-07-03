@@ -38,8 +38,10 @@ pip install cantera numpy scipy pandas matplotlib networkx torch torch_geometric
 
 - **mechanism** – parse CTI/CK mechanisms using Cantera and remove species/reactions.
 - **graph** – construct species–reaction graphs and export in GraphML format.
-- **reactor** – batch reactor solvers for constant pressure and constant volume.
+- **reactor** – batch, piston and network reactor solvers and 1-D flames.
 - **progress_variable** – compute progress variables from reactor results.
+- **metrics** – distance metrics for comparing reactor runs.
+- **timescales** – basic timescale analysis.
 - **metaheuristics** – GA, ABC, Bees and Branch-and-Bound algorithms for mechanism reduction.
 - **gnn** – graph neural network models (GCN and GAT) for scoring species.
 - **testing** – scripts to run example simulations and measure reduction errors.
@@ -51,5 +53,6 @@ pip install cantera numpy scipy pandas matplotlib networkx torch torch_geometric
 4. Compute progress variables and errors.
 5. Optimise species selection via GA, ABC, Bees or BnB metaheuristics.
 6. Optionally train a GNN model to predict species importance.
+7. Compute timescales and distance metrics for evaluation.
 
 All results and plots should be written into the `results` and `visualizations` folders.
