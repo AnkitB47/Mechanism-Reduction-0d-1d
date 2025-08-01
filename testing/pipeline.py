@@ -1,6 +1,8 @@
+"""Utilities for running the full reduction pipeline and plotting results."""
+
 import csv
 import os
-from typing import Callable, List, Tuple, Sequence
+from typing import Callable, List, Tuple, Sequence, Iterable
 import numpy as np
 import cantera as ct
 from mechanism.loader import Mechanism
@@ -14,17 +16,36 @@ from metaheuristics import (
 )
 from graph.construction import build_species_graph
 from gnn.models import train_dummy_gnn, predict_scores
+from visualizations import (
+    plot_mole_fraction,
+    plot_ignition_delays,
+    plot_convergence,
+    plot_pv_errors,
+)
 
 
 def pv_error(full: np.ndarray, red: np.ndarray) -> float:
-    return np.linalg.norm(full - red) / (np.linalg.norm(full) + 1e-12)
+    """Return the relative L2 error between two progress variables."""
+    return float(np.linalg.norm(full - red) / (np.linalg.norm(full) + 1e-12))
 
 
-def ignition_delay(time: np.ndarray, T: np.ndarray, Y: np.ndarray | None = None, species_idx: int | None = None) -> float:
+def ignition_delay(
+    time: np.ndarray,
+    T: np.ndarray,
+    Y: np.ndarray | None = None,
+    species_idx: int | None = None,
+) -> float:
     """Return ignition delay based on temperature or species derivative.
 
-    If ``species_idx`` is provided, the ignition delay is taken from the peak of
-    ``dY[:, species_idx]/dt``; otherwise the peak of ``dT/dt`` is used.
+    Parameters
+    ----------
+    time, T:
+        Time vector and temperature profile of the reactor.
+    Y:
+        Optional mass-fraction matrix for species ignition detection.
+    species_idx:
+        Index of the species to monitor. If ``None`` the maximum of ``dT/dt`` is
+        used.
     """
 
     if species_idx is not None and Y is not None:
@@ -44,7 +65,23 @@ def evaluate_selection(
     scores: np.ndarray | None = None,
     weights: Sequence[float] | None = None,
 ) -> float:
-    """Return fitness for a given species selection."""
+    """Return fitness for a given species selection.
+
+    Parameters
+    ----------
+    selection:
+        Binary vector indicating which species to keep.
+    base_mech:
+        Reference mechanism used as a template.
+    Y0, tf:
+        Initial composition and final time for the reactor simulation.
+    full_res:
+        Result from the full mechanism simulation used for comparison.
+    scores:
+        Optional importance scores for penalising removal of species.
+    weights:
+        Progress-variable weights.
+    """
 
     keep = [base_mech.species_names[i] for i, bit in enumerate(selection) if bit]
     mech = Mechanism(base_mech.file_path)
@@ -91,8 +128,7 @@ def run_all_algorithms(
 
     eval_fn = lambda sel: evaluate_selection(sel, mech, Y0, tf, full, scores, weights)
 
-    ga_best, ga_hist = run_ga(genome_len, eval_fn, GAOptions(generations=5)) , []
-    ga_sel = ga_best
+    ga_sel, ga_hist = run_ga(genome_len, eval_fn, GAOptions(generations=5), return_history=True)
 
     abc_sel, abc_hist = run_abc(genome_len, eval_fn)
     bees_sel, bees_hist = run_bees(genome_len, eval_fn)
@@ -113,13 +149,20 @@ def save_metrics(
     tf: float,
     out_dir: str,
     weights: Sequence[float] | None = None,
-) -> None:
+) -> Tuple[List[BatchResult], List[float], List[float], List[int]]:
+    """Evaluate reduced mechanisms and store metric CSV files."""
+
     os.makedirs(out_dir, exist_ok=True)
-    metrics = []
+    results: List[BatchResult] = []
+    pv_errors: List[float] = []
+    delays: List[float] = []
+    sizes: List[int] = []
     if weights is None:
         weights = np.ones(full_res.mass_fractions.shape[1])
     pv_full = progress_variable(full_res.mass_fractions, weights)
     full_delay = ignition_delay(full_res.time, full_res.temperature)
+
+    metrics_rows = []
     for name, sel in zip(names, sols):
         keep = [mech.species_names[i] for i, b in enumerate(sel) if b]
         red_mech = Mechanism(mech.file_path)
@@ -127,40 +170,116 @@ def save_metrics(
         try:
             if remove:
                 red_mech.remove_species(remove)
-            res = run_constant_pressure(red_mech.solution, 1000.0, ct.one_atm, Y0, tf, nsteps=len(full_res.time))
+            res = run_constant_pressure(
+                red_mech.solution,
+                1000.0,
+                ct.one_atm,
+                Y0,
+                tf,
+                nsteps=len(full_res.time),
+            )
             pv_red = progress_variable(res.mass_fractions, weights)
             err = pv_error(pv_full, pv_red)
             delay = ignition_delay(res.time, res.temperature)
-            size_red = 1 - sel.sum() / len(sel)
-            metrics.append([name, err, abs(delay - full_delay)/full_delay, size_red])
+            size_red = int(sel.sum())
+            metrics_rows.append([
+                name,
+                err,
+                abs(delay - full_delay) / full_delay,
+                size_red,
+            ])
+            results.append(res)
+            pv_errors.append(err)
+            delays.append(delay)
+            sizes.append(size_red)
         except Exception:
-            metrics.append([name, 1.0, 1.0, 0.0])
-    with open(os.path.join(out_dir, 'metrics.csv'), 'w', newline='') as f:
+            metrics_rows.append([name, 1.0, 1.0, 0])
+            results.append(full_res)
+            pv_errors.append(1.0)
+            delays.append(full_delay)
+            sizes.append(0)
+
+    with open(os.path.join(out_dir, "metrics.csv"), "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(['algorithm', 'pv_error', 'ignition_delay_error', 'size_reduction'])
-        writer.writerows(metrics)
+        writer.writerow([
+            "algorithm",
+            "pv_error",
+            "ignition_delay_error",
+            "species_retained",
+        ])
+        writer.writerows(metrics_rows)
+
+    with open(os.path.join(out_dir, "ignition_delay.csv"), "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["algorithm", "ignition_delay_s"])
+        writer.writerow(["Full", full_delay])
+        writer.writerows(zip(names, delays))
+
+    with open(os.path.join(out_dir, "pv_error.csv"), "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["algorithm", "pv_error"])
+        writer.writerows(zip(names, pv_errors))
+
+    with open(os.path.join(out_dir, "species_retained.csv"), "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["algorithm", "num_species"])
+        writer.writerows(zip(names, sizes))
+
+    return results, pv_errors, delays, sizes
 
 
 import matplotlib.pyplot as plt
 
-def plot_profiles(full_res, mech: Mechanism, Y0: dict, tf: float, out_dir: str):
-    key_species = ['CH4', 'O2', 'CO2']
-    plt.figure()
-    for sp in key_species:
-        if sp in mech.species_names:
-            idx = mech.species_names.index(sp)
-            plt.plot(full_res.time, full_res.mass_fractions[:, idx], label=sp)
-    plt.xlabel('Time [s]')
-    plt.ylabel('Mass Fraction')
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, 'profiles.png'))
-    plt.close()
+def plot_profiles(
+    full_res: BatchResult,
+    red_res: BatchResult,
+    species_idx: Sequence[int],
+    species_names: Sequence[str],
+    out_base: str,
+) -> None:
+    """Plot mole-fraction profiles of selected species."""
+
+    fig, ax = plt.subplots()
+    for idx, name in zip(species_idx, species_names):
+        ax.plot(full_res.time, full_res.mass_fractions[:, idx], label=f"{name} full")
+        ax.plot(red_res.time, red_res.mass_fractions[:, idx], "--", label=f"{name} red")
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Mass Fraction")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_base + ".png")
+    fig.savefig(out_base + ".pdf")
+    plt.close(fig)
 
 def full_pipeline(mech_path: str, out_dir: str, steps: int = 200):
-    Y0 = {'CH4':0.5, 'O2':1.0, 'N2':3.76}
+    """Run the complete testing pipeline and generate plots/CSVs."""
+
+    Y0 = {"CH4": 0.5, "O2": 1.0, "N2": 3.76}
     tf = 0.02
-    names, solutions, history, full, weights = run_all_algorithms(mech_path, Y0, tf, steps)
+
+    names, solutions, histories, full, weights = run_all_algorithms(mech_path, Y0, tf, steps)
     mech = Mechanism(mech_path)
-    save_metrics(names, solutions, full, mech, Y0, tf, out_dir, weights)
-    plot_profiles(full, mech, Y0, tf, out_dir)
+
+    results, pv_err, delays, sizes = save_metrics(names, solutions, full, mech, Y0, tf, out_dir, weights)
+
+    # write fitness history CSVs
+    for name, hist in zip(names, histories):
+        if not hist:
+            continue
+        path = os.path.join(out_dir, f"{name.lower()}_fitness.csv")
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["generation", "fitness"])
+            for i, val in enumerate(hist):
+                writer.writerow([i, val])
+
+    # choose the algorithm with minimum PV error for profile plot
+    best_idx = int(np.argmin(pv_err)) if pv_err else 0
+    key_species = [s for s in ["CH4", "O2", "CO2"] if s in mech.species_names]
+    idxs = [mech.species_names.index(s) for s in key_species]
+    if results:
+        plot_profiles(full, results[best_idx], idxs, key_species, os.path.join(out_dir, "profiles"))
+
+    plot_ignition_delays(delays, names, os.path.join(out_dir, "ignition_delay"))
+    plot_convergence(histories, names, os.path.join(out_dir, "convergence"))
+    plot_pv_errors(pv_err, names, os.path.join(out_dir, "pv_error"))
