@@ -26,6 +26,30 @@ python -m testing.run_tests --mechanism data/gri30.yaml --out results
 
 This command executes all metaheuristics, compares reduced mechanisms to the full one and stores metrics and plots in the `results` folder.
 
+Example output files in ``results/``:
+
+```
+results/
+    metrics.csv
+    pv_error.csv
+    ignition_delay.csv
+    species_retained.csv
+    ga_fitness.csv
+    abc_fitness.csv
+    bees_fitness.csv
+    profiles.png / .pdf
+    convergence.png / .pdf
+    ignition_delay.png / .pdf
+    pv_error.png / .pdf
+```
+
+Each CSV contains numeric data that can be imported into other tools for further analysis.
+
+The command accepts two arguments:
+
+- ``--mechanism`` – path to the Cantera YAML mechanism.
+- ``--out`` – directory where all plots and CSVs are written.
+
 ## Installation
 
 Required packages are listed below.  Install with `pip`:
