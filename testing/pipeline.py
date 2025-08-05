@@ -1,19 +1,16 @@
 """Utilities for running the full reduction pipeline and plotting results."""
 
 import csv
+import json
 import os
 from typing import Callable, List, Tuple, Sequence, Iterable
 import numpy as np
 import cantera as ct
 from mechanism.loader import Mechanism
 from reactor.batch import BatchResult, run_constant_pressure
-from progress_variable import progress_variable, optimise_weights
-from metaheuristics import (
-    run_ga, GAOptions,
-    run_abc, ABCOptions,
-    run_bees, BeesOptions,
-    run_bnb, BnBOptions,
-)
+from progress_variable import progress_variable
+from metaheuristics.ga import run_ga, GAOptions
+from metrics import pv_error, ignition_delay
 from graph.construction import build_species_graph
 from gnn.models import train_dummy_gnn, predict_scores
 from visualizations import (
@@ -22,38 +19,6 @@ from visualizations import (
     plot_convergence,
     plot_pv_errors,
 )
-
-
-def pv_error(full: np.ndarray, red: np.ndarray) -> float:
-    """Return the relative L2 error between two progress variables."""
-    return float(np.linalg.norm(full - red) / (np.linalg.norm(full) + 1e-12))
-
-
-def ignition_delay(
-    time: np.ndarray,
-    T: np.ndarray,
-    Y: np.ndarray | None = None,
-    species_idx: int | None = None,
-) -> float:
-    """Return ignition delay based on temperature or species derivative.
-
-    Parameters
-    ----------
-    time, T:
-        Time vector and temperature profile of the reactor.
-    Y:
-        Optional mass-fraction matrix for species ignition detection.
-    species_idx:
-        Index of the species to monitor. If ``None`` the maximum of ``dT/dt`` is
-        used.
-    """
-
-    if species_idx is not None and Y is not None:
-        deriv = np.gradient(Y[:, species_idx], time)
-    else:
-        deriv = np.gradient(T, time)
-    idx = int(np.argmax(deriv))
-    return float(time[idx])
 
 
 def evaluate_selection(
@@ -83,7 +48,8 @@ def evaluate_selection(
         Progress-variable weights.
     """
 
-    keep = [base_mech.species_names[i] for i, bit in enumerate(selection) if bit]
+    idx_keep = [i for i, bit in enumerate(selection) if bit]
+    keep = [base_mech.species_names[i] for i in idx_keep]
     mech = Mechanism(base_mech.file_path)
     remove = [s for s in mech.species_names if s not in keep]
     try:
@@ -93,9 +59,11 @@ def evaluate_selection(
     except Exception:
         return -1e6
     if weights is None:
-        weights = np.ones(full_res.mass_fractions.shape[1])
-    pv_full = progress_variable(full_res.mass_fractions, weights)
-    pv_red = progress_variable(res.mass_fractions, weights)
+        weights_sel = np.ones(len(idx_keep))
+    else:
+        weights_sel = np.array([weights[i] for i in idx_keep])
+    pv_full = progress_variable(full_res.mass_fractions[:, idx_keep], weights_sel)
+    pv_red = progress_variable(res.mass_fractions, weights_sel)
     err = pv_error(pv_full, pv_red)
     if scores is None:
         size_penalty = selection.sum() / len(selection)
@@ -105,21 +73,25 @@ def evaluate_selection(
     return -(err + 0.01 * float(size_penalty))
 
 
-def run_all_algorithms(
+def run_ga_reduction(
     mech_path: str,
     Y0: dict,
     tf: float,
     steps: int = 200,
 ) -> Tuple[List[str], List[np.ndarray], List[List[float]], BatchResult, np.ndarray]:
-    """Run all metaheuristics on the given mechanism."""
+    """Run the GA-based reduction on the given mechanism."""
 
     mech = Mechanism(mech_path)
     full = run_constant_pressure(mech.solution, 1000.0, ct.one_atm, Y0, tf, nsteps=steps)
     genome_len = len(mech.species_names)
 
-    # optimise PV weights from the full solution
-    pv_ref = progress_variable(full.mass_fractions, np.ones(genome_len))
-    weights = optimise_weights(full.mass_fractions, pv_ref)
+    weights_path = os.path.join("data", "species_weights.json")
+    if os.path.exists(weights_path):
+        with open(weights_path) as f:
+            weight_map = json.load(f)
+        weights = np.array([weight_map.get(s, 0.0) for s in mech.species_names])
+    else:
+        weights = np.ones(genome_len)
 
     G = build_species_graph(mech.solution)
     gnn_model = train_dummy_gnn(G, epochs=5)
@@ -128,15 +100,16 @@ def run_all_algorithms(
 
     eval_fn = lambda sel: evaluate_selection(sel, mech, Y0, tf, full, scores, weights)
 
-    ga_sel, ga_hist = run_ga(genome_len, eval_fn, GAOptions(generations=5), return_history=True)
+    ga_sel, ga_hist = run_ga(
+        genome_len,
+        eval_fn,
+        GAOptions(population_size=8, generations=4),
+        return_history=True,
+    )
 
-    abc_sel, abc_hist = run_abc(genome_len, eval_fn)
-    bees_sel, bees_hist = run_bees(genome_len, eval_fn)
-    bnb_sel, bnb_hist = run_bnb(min(genome_len, 6), eval_fn, BnBOptions(max_size=6)) if genome_len <= 6 else (np.ones(genome_len, dtype=int), [])
-
-    names = ['GA', 'ABC', 'Bees', 'BnB']
-    solutions = [ga_sel, abc_sel, bees_sel, bnb_sel]
-    history = [ga_hist, abc_hist, bees_hist, bnb_hist]
+    names = ["GA"]
+    solutions = [ga_sel]
+    history = [ga_hist]
     return names, solutions, history, full, weights
 
 
@@ -159,12 +132,12 @@ def save_metrics(
     sizes: List[int] = []
     if weights is None:
         weights = np.ones(full_res.mass_fractions.shape[1])
-    pv_full = progress_variable(full_res.mass_fractions, weights)
     full_delay = ignition_delay(full_res.time, full_res.temperature)
 
     metrics_rows = []
     for name, sel in zip(names, sols):
-        keep = [mech.species_names[i] for i, b in enumerate(sel) if b]
+        idx_keep = [i for i, b in enumerate(sel) if b]
+        keep = [mech.species_names[i] for i in idx_keep]
         red_mech = Mechanism(mech.file_path)
         remove = [s for s in red_mech.species_names if s not in keep]
         try:
@@ -178,7 +151,9 @@ def save_metrics(
                 tf,
                 nsteps=len(full_res.time),
             )
-            pv_red = progress_variable(res.mass_fractions, weights)
+            weights_sel = np.array([weights[i] for i in idx_keep])
+            pv_full = progress_variable(full_res.mass_fractions[:, idx_keep], weights_sel)
+            pv_red = progress_variable(res.mass_fractions, weights_sel)
             err = pv_error(pv_full, pv_red)
             delay = ignition_delay(res.time, res.temperature)
             size_red = int(sel.sum())
@@ -257,7 +232,7 @@ def full_pipeline(mech_path: str, out_dir: str, steps: int = 200):
     Y0 = {"CH4": 0.5, "O2": 1.0, "N2": 3.76}
     tf = 0.02
 
-    names, solutions, histories, full, weights = run_all_algorithms(mech_path, Y0, tf, steps)
+    names, solutions, histories, full, weights = run_ga_reduction(mech_path, Y0, tf, steps)
     mech = Mechanism(mech_path)
 
     results, pv_err, delays, sizes = save_metrics(names, solutions, full, mech, Y0, tf, out_dir, weights)
