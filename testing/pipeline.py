@@ -3,7 +3,7 @@
 import csv
 import json
 import os
-from typing import Callable, List, Tuple, Sequence, Iterable
+from typing import List, Tuple, Sequence
 import numpy as np
 import cantera as ct
 from mechanism.loader import Mechanism
@@ -27,10 +27,10 @@ def evaluate_selection(
     Y0: dict,
     tf: float,
     full_res,
-    scores: np.ndarray | None = None,
     weights: Sequence[float] | None = None,
-) -> float:
-    """Return fitness for a given species selection.
+    critical_idxs: Sequence[int] | None = None,
+) -> Tuple[float, float, float, str]:
+    """Return fitness and debug info for a given species selection.
 
     Parameters
     ----------
@@ -42,11 +42,17 @@ def evaluate_selection(
         Initial composition and final time for the reactor simulation.
     full_res:
         Result from the full mechanism simulation used for comparison.
-    scores:
-        Optional importance scores for penalising removal of species.
     weights:
         Progress-variable weights.
+    critical_idxs:
+        Indices of species that must always be retained.
     """
+
+    size_frac = float(selection.sum()) / len(selection)
+    reason = ""
+    if critical_idxs is not None:
+        if selection.sum() < max(4, len(critical_idxs)) or np.any(selection[list(critical_idxs)] == 0):
+            return -1e6, 1.0, size_frac, "missing_critical"
 
     idx_keep = [i for i, bit in enumerate(selection) if bit]
     keep = [base_mech.species_names[i] for i in idx_keep]
@@ -55,9 +61,16 @@ def evaluate_selection(
     try:
         if remove:
             mech.remove_species(remove)
-        res = run_constant_pressure(mech.solution, full_res.temperature[0], ct.one_atm, Y0, tf, nsteps=len(full_res.time))
+        res = run_constant_pressure(
+            mech.solution,
+            full_res.temperature[0],
+            ct.one_atm,
+            Y0,
+            tf,
+            nsteps=len(full_res.time),
+        )
     except Exception:
-        return -1e6
+        return -1e6, 1.0, size_frac, "sim_failed"
     if weights is None:
         weights_sel = np.ones(len(idx_keep))
     else:
@@ -65,12 +78,8 @@ def evaluate_selection(
     pv_full = progress_variable(full_res.mass_fractions[:, idx_keep], weights_sel)
     pv_red = progress_variable(res.mass_fractions, weights_sel)
     err = pv_error(pv_full, pv_red)
-    if scores is None:
-        size_penalty = selection.sum() / len(selection)
-    else:
-        size_penalty = (1 - selection) * scores
-        size_penalty = size_penalty.sum() / len(selection)
-    return -(err + 0.01 * float(size_penalty))
+    fitness = -err - 0.01 * size_frac
+    return fitness, err, size_frac, reason
 
 
 def run_ga_reduction(
@@ -78,7 +87,14 @@ def run_ga_reduction(
     Y0: dict,
     tf: float,
     steps: int = 200,
-) -> Tuple[List[str], List[np.ndarray], List[List[float]], BatchResult, np.ndarray]:
+) -> Tuple[
+    List[str],
+    List[np.ndarray],
+    List[List[float]],
+    List[List[tuple]],
+    BatchResult,
+    np.ndarray,
+]:
     """Run the GA-based reduction on the given mechanism."""
 
     mech = Mechanism(mech_path)
@@ -98,19 +114,43 @@ def run_ga_reduction(
     scores_dict = predict_scores(gnn_model, G)
     scores = np.array([scores_dict[s] for s in mech.species_names])
 
-    eval_fn = lambda sel: evaluate_selection(sel, mech, Y0, tf, full, scores, weights)
+    critical = ["CH4", "O2", "CO2", "H2O", "N2"]
+    critical_idxs = [mech.species_names.index(s) for s in critical if s in mech.species_names]
 
-    ga_sel, ga_hist = run_ga(
+    # seed part of the initial population with top-k species from GNN ranking
+    order = np.argsort(scores)[::-1]
+    k = min(genome_len, max(len(critical_idxs) + 10, int(0.3 * genome_len)))
+    pop_size = 12
+    num_seed = max(1, pop_size // 2)
+    init_pop = np.random.randint(0, 2, size=(pop_size, genome_len))
+    init_pop[:, critical_idxs] = 1
+    # ensure at least one individual keeps the full mechanism
+    init_pop[0] = 1
+    for i in range(1, num_seed):
+        seed = np.ones(genome_len, dtype=int)
+        if i < genome_len:
+            seed[order[-i]] = 0  # remove lowest-ranked species
+        seed[critical_idxs] = 1
+        init_pop[i] = seed
+
+    eval_fn = lambda sel: evaluate_selection(
+        sel, mech, Y0, tf, full, weights, critical_idxs
+    )
+
+    ga_sel, ga_hist, debug = run_ga(
         genome_len,
         eval_fn,
-        GAOptions(population_size=8, generations=4),
+        GAOptions(population_size=pop_size, generations=6),
         return_history=True,
+        initial_population=init_pop,
+        return_debug=True,
+        fixed_indices=critical_idxs,
     )
 
     names = ["GA"]
     solutions = [ga_sel]
     history = [ga_hist]
-    return names, solutions, history, full, weights
+    return names, solutions, history, debug, full, weights
 
 
 def save_metrics(
@@ -226,16 +266,19 @@ def plot_profiles(
     fig.savefig(out_base + ".pdf")
     plt.close(fig)
 
-def full_pipeline(mech_path: str, out_dir: str, steps: int = 200):
+def full_pipeline(mech_path: str, out_dir: str, steps: int = 200, tf: float = 1.0):
     """Run the complete testing pipeline and generate plots/CSVs."""
 
     Y0 = {"CH4": 0.5, "O2": 1.0, "N2": 3.76}
-    tf = 0.02
 
-    names, solutions, histories, full, weights = run_ga_reduction(mech_path, Y0, tf, steps)
+    names, solutions, histories, debug, full, weights = run_ga_reduction(
+        mech_path, Y0, tf, steps
+    )
     mech = Mechanism(mech_path)
 
-    results, pv_err, delays, sizes = save_metrics(names, solutions, full, mech, Y0, tf, out_dir, weights)
+    results, pv_err, delays, sizes = save_metrics(
+        names, solutions, full, mech, Y0, tf, out_dir, weights
+    )
 
     # write fitness history CSVs
     for name, hist in zip(names, histories):
@@ -248,12 +291,76 @@ def full_pipeline(mech_path: str, out_dir: str, steps: int = 200):
             for i, val in enumerate(hist):
                 writer.writerow([i, val])
 
+    # debug fitness logging
+    dbg_path = os.path.join(out_dir, "debug_fitness.csv")
+    with open(dbg_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["generation", "individual", "pv_error", "size_penalty", "fitness", "reason"])
+        for g, gen in enumerate(debug):
+            for i, det in enumerate(gen):
+                pv_err_g, size_pen, fit, reason, genome = det
+                writer.writerow([g, i, pv_err_g, size_pen, fit, reason])
+
+    # visual debugging for best individual of each generation
+    for g, gen in enumerate(debug):
+        if not gen:
+            continue
+        scores = [d[2] for d in gen]
+        best_idx = int(np.argmax(scores))
+        genome = gen[best_idx][4]
+        idx_keep = [i for i, bit in enumerate(genome) if bit]
+        keep = [mech.species_names[i] for i in idx_keep]
+        red_mech = Mechanism(mech_path)
+        remove = [s for s in red_mech.species_names if s not in keep]
+        try:
+            if remove:
+                red_mech.remove_species(remove)
+            res = run_constant_pressure(
+                red_mech.solution,
+                1000.0,
+                ct.one_atm,
+                Y0,
+                tf,
+                nsteps=len(full.time),
+            )
+            weights_sel = np.array([weights[i] for i in idx_keep])
+            pv_full = progress_variable(full.mass_fractions[:, idx_keep], weights_sel)
+            pv_red = progress_variable(res.mass_fractions, weights_sel)
+
+            fig, ax = plt.subplots()
+            ax.plot(full.time, pv_full, label="full")
+            ax.plot(res.time, pv_red, "--", label="reduced")
+            ax.set_xlabel("Time [s]")
+            ax.set_ylabel("Progress Variable")
+            ax.legend()
+            fig.tight_layout()
+            fig.savefig(os.path.join(out_dir, f"debug_gen{g}_pv.png"))
+            plt.close(fig)
+
+            fig, ax = plt.subplots()
+            ax.plot(full.time, full.temperature, label="full")
+            ax.plot(res.time, res.temperature, "--", label="reduced")
+            ax.set_xlabel("Time [s]")
+            ax.set_ylabel("Temperature [K]")
+            ax.legend()
+            fig.tight_layout()
+            fig.savefig(os.path.join(out_dir, f"debug_gen{g}_T.png"))
+            plt.close(fig)
+        except Exception:
+            continue
+
     # choose the algorithm with minimum PV error for profile plot
     best_idx = int(np.argmin(pv_err)) if pv_err else 0
     key_species = [s for s in ["CH4", "O2", "CO2"] if s in mech.species_names]
     idxs = [mech.species_names.index(s) for s in key_species]
     if results:
-        plot_profiles(full, results[best_idx], idxs, key_species, os.path.join(out_dir, "profiles"))
+        plot_profiles(
+            full,
+            results[best_idx],
+            idxs,
+            key_species,
+            os.path.join(out_dir, "profiles"),
+        )
 
     plot_ignition_delays(delays, names, os.path.join(out_dir, "ignition_delay"))
     plot_convergence(histories, names, os.path.join(out_dir, "convergence"))
