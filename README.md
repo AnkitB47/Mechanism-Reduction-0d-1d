@@ -9,9 +9,7 @@ metrics.
 
 ## Running the Pipeline
 
-```
 python -m testing.run_tests --out results --steps 200 --tf 1.0
-```
 
 The command loads the `data/gri30.yaml` mechanism, executes a batch reactor
 simulation and applies the GA reduction.  Adjust `--steps` or `--tf` to control
@@ -28,13 +26,10 @@ along with generation-wise PV/temperature plots.
 
 Install them with pip if necessary:
 
-```
 pip install cantera networkx torch torch_geometric matplotlib
-```
 
 ## Repository Layout
 
-```
 data/               Example mechanism files and weights
 mechanism/          Mechanism parsing and editing utilities
 reactor/            Reactor models using Cantera
@@ -44,4 +39,3 @@ metaheuristics/     Genetic algorithm implementation
 gnn/                Simple GNN models for species scoring
 testing/            CLI entry points and pipeline utilities
 visualizations/     Plotting helpers
-```
