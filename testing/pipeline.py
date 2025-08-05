@@ -3,7 +3,7 @@
 import csv
 import json
 import os
-from typing import Callable, List, Tuple, Sequence, Iterable
+from typing import List, Tuple, Sequence
 import numpy as np
 import cantera as ct
 from mechanism.loader import Mechanism

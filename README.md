@@ -14,9 +14,10 @@ python -m testing.run_tests --out results --steps 200 --tf 1.0
 ```
 
 The command loads the `data/gri30.yaml` mechanism, executes a batch reactor
-simulation and applies the GA reduction.  CSV files and plots are written to
-`results/`.  Additional debugging information is stored in
-`debug_fitness.csv` and generation-wise PV/temperature plots.
+simulation and applies the GA reduction.  Adjust `--steps` or `--tf` to control
+the integration granularity and final time. CSV files and plots are written to
+`results/`.  Additional debugging information is stored in `debug_fitness.csv`
+along with generation-wise PV/temperature plots.
 
 ## Dependencies
 
