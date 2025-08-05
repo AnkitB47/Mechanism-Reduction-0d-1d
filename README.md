@@ -21,10 +21,12 @@ This project provides a Python implementation for reducing chemical reaction mec
 Run the full testing pipeline:
 
 ```bash
-python -m testing.run_tests --mechanism data/gri30.yaml --out results
+python -m testing.run_tests --out results
 ```
 
-This command executes all metaheuristics, compares reduced mechanisms to the full one and stores metrics and plots in the `results` folder.
+By default the script uses ``data/gri30.yaml`` and 50 time steps.  Use ``--mechanism`` and ``--steps`` to override these defaults.  The
+command executes all metaheuristics, compares reduced mechanisms to the full one and stores metrics and plots in the ``results``
+folder.
 
 Example output files in ``results/``:
 
@@ -45,10 +47,11 @@ results/
 
 Each CSV contains numeric data that can be imported into other tools for further analysis.
 
-The command accepts two arguments:
+The command accepts optional arguments:
 
-- ``--mechanism`` – path to the Cantera YAML mechanism.
+- ``--mechanism`` – path to the Cantera YAML mechanism (defaults to ``data/gri30.yaml``).
 - ``--out`` – directory where all plots and CSVs are written.
+- ``--steps`` – number of time steps in the reactor simulation.
 
 ## Installation
 
