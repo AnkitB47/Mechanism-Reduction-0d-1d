@@ -119,7 +119,6 @@ def run_ga_reduction(
 
     critical = [s for s in ["CH4", "O2", "N2"] if s in mech.species_names]
     critical_idxs = [mech.species_names.index(s) for s in critical]
-
     order = np.argsort(scores)
     k = int(0.2 * genome_len)
     pop_size = 12
@@ -144,7 +143,11 @@ def run_ga_reduction(
                 removed += 1
                 if removed == i:
                     break
+                    
         init_pop[i] = seed
+    for i in range(num_seed, pop_size):
+        init_pop[i] = np.random.randint(0, 2, genome_len)
+        init_pop[i][critical_idxs] = 1
 
     for i in range(num_seed, pop_size):
         init_pop[i] = np.random.randint(0, 2, genome_len)
