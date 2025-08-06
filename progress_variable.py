@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+from typing import Sequence
+
 import numpy as np
-from typing import Iterable, Sequence
 
 
 def progress_variable(Y: np.ndarray, weights: Sequence[float]) -> np.ndarray:
@@ -25,6 +27,9 @@ def progress_variable(Y: np.ndarray, weights: Sequence[float]) -> np.ndarray:
     W = np.asarray(weights, dtype=float)
     if Y.shape[1] != W.size:
         raise ValueError("Weight length must match number of species")
+    if not np.any(W):
+        logging.getLogger(__name__).warning("All PV species weights are zero; returning zeros")
+        return np.zeros(Y.shape[0])
     pv = (Y * W[None, :]).sum(axis=1)
     if pv[-1] <= pv[0]:
         pv[-1] = pv[0] + 1e-6

@@ -12,7 +12,7 @@ from progress_variable import progress_variable
 from metaheuristics.ga import run_ga, GAOptions
 from metrics import pv_error, ignition_delay
 from graph.construction import build_species_graph
-from gnn.models import train_dummy_gnn, predict_scores
+from gnn.models import train_gnn, predict_scores
 from visualizations import (
     plot_mole_fraction,
     plot_ignition_delays,
@@ -77,9 +77,10 @@ def evaluate_selection(
         weights_sel = np.ones(len(idx_keep))
     else:
         weights_sel = np.array([weights[i] for i in idx_keep])
-    idx_red = [mech.species_names.index(s) for s in keep]
+    if not np.any(weights_sel > 0):
+        return -1e6, 1.0, size_frac, "no_pv_species"
     pv_full = progress_variable(full_res.mass_fractions[:, idx_keep], weights_sel)
-    pv_red = progress_variable(res.mass_fractions[:, idx_red], weights_sel)
+    pv_red = progress_variable(res.mass_fractions, weights_sel)
     err = pv_error(pv_full, pv_red)
     fitness = -err - 0.1 * size_frac
     return fitness, err, size_frac, reason
@@ -110,10 +111,11 @@ def run_ga_reduction(
             weight_map = json.load(f)
         weights = np.array([weight_map.get(s, 1e-3) for s in mech.species_names])
     else:
+        weight_map = {}
         weights = np.ones(genome_len)
 
     G = build_species_graph(mech.solution)
-    gnn_model = train_dummy_gnn(G, epochs=5)
+    gnn_model = train_gnn(G, weight_map, epochs=5)
     scores_dict = predict_scores(gnn_model, G)
     scores = np.array([scores_dict[s] for s in mech.species_names])
 
@@ -215,10 +217,14 @@ def save_metrics(
                 nsteps=len(full_res.time),
             )
             weights_sel = np.array([weights[i] for i in idx_keep])
-            idx_red = [red_mech.species_names.index(s) for s in keep]
-            pv_full = progress_variable(full_res.mass_fractions[:, idx_keep], weights_sel)
-            pv_red = progress_variable(res.mass_fractions[:, idx_red], weights_sel)
-            err = pv_error(pv_full, pv_red)
+            if not np.any(weights_sel > 0):
+                err = 1.0
+            else:
+                pv_full = progress_variable(
+                    full_res.mass_fractions[:, idx_keep], weights_sel
+                )
+                pv_red = progress_variable(res.mass_fractions, weights_sel)
+                err = pv_error(pv_full, pv_red)
             delay = ignition_delay(res.time, res.temperature)
             size_red = int(sel.sum())
             metrics_rows.append([

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 from torch import nn
 from torch_geometric.nn import GCNConv, GATConv
@@ -36,12 +38,17 @@ def graph_to_data(G: nx.DiGraph) -> Data:
     return Data(x=x, edge_index=edge_index)
 
 
-def train_dummy_gnn(G: nx.DiGraph, epochs: int = 10) -> SpeciesGCN:
-    """Train a simple GCN on random targets to demonstrate workflow."""
+def train_gnn(
+    G: nx.DiGraph, labels: dict[str, float] | None = None, epochs: int = 10
+) -> SpeciesGCN:
+    """Train a simple GCN using provided species importance labels."""
     data = graph_to_data(G)
     model = SpeciesGCN(in_dim=2, hidden=4)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-    y = torch.rand(len(G.nodes), 1)
+    if labels is None:
+        y = torch.ones(len(G.nodes), 1)
+    else:
+        y = torch.tensor([labels.get(n, 0.0) for n in G.nodes], dtype=torch.float).unsqueeze(1)
     for _ in range(epochs):
         optimizer.zero_grad()
         out = model(data.x, data.edge_index)
