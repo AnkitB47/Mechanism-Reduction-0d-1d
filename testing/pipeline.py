@@ -3,14 +3,15 @@
 import csv
 import json
 import os
+import logging
 from typing import List, Tuple, Sequence
 import numpy as np
 import cantera as ct
 from mechanism.loader import Mechanism
 from reactor.batch import BatchResult, run_constant_pressure
-from progress_variable import progress_variable
+from progress_variable import pv_error_aligned, progress_variable
 from metaheuristics.ga import run_ga, GAOptions
-from metrics import pv_error, ignition_delay
+from metrics import ignition_delay
 from graph.construction import build_species_graph
 from gnn.models import train_gnn, predict_scores
 from visualizations import (
@@ -26,10 +27,10 @@ def evaluate_selection(
     base_mech: Mechanism,
     Y0: dict,
     tf: float,
-    full_res,
+    full_res: BatchResult,
     weights: Sequence[float] | None = None,
     critical_idxs: Sequence[int] | None = None,
-) -> Tuple[float, float, float, str]:
+) -> Tuple[float, float, float, float, str]:
     """Return fitness and debug info for a given species selection.
 
     Parameters
@@ -50,16 +51,17 @@ def evaluate_selection(
 
     size_frac = float(selection.sum()) / len(selection)
     reason = ""
+    logger = logging.getLogger(__name__)
     if critical_idxs is not None:
         if selection.sum() < max(4, len(critical_idxs)) or np.any(selection[list(critical_idxs)] == 0):
-            return -1e6, 1.0, size_frac, "missing_critical"
+            return -1e6, 1.0, 1.0, 1.0, "missing_critical"
 
     idx_keep = [i for i, bit in enumerate(selection) if bit]
     keep = [base_mech.species_names[i] for i in idx_keep]
     mech = Mechanism(base_mech.file_path)
     remove = [s for s in mech.species_names if s not in keep]
-    print("Species to remove:", remove)
-    print(f"Species retained: {selection.sum()}, Total: {len(selection)}")
+    logger.debug("Species to remove: %s", remove)
+    logger.debug("Species retained: %d/%d", int(selection.sum()), len(selection))
     try:
         if remove:
             mech.remove_species(remove)
@@ -72,18 +74,36 @@ def evaluate_selection(
             nsteps=len(full_res.time),
         )
     except Exception as e:
-        return -1e6, 1.0, size_frac, f"sim_failed:{type(e).__name__}"
+        return -1e6, 1.0, 1.0, 1.0, f"sim_failed:{type(e).__name__}"
+
+    temp_rise = float(res.temperature.max() - res.temperature[0])
+    species_change = float(np.max(np.abs(res.mass_fractions - res.mass_fractions[0])))
+    logger.debug("Temp rise %.3f K, species change %.3e", temp_rise, species_change)
+    if temp_rise < 10 or species_change < 1e-6:
+        return -1e6, 1.0, 1.0, 1.0, "no_reaction"
+
     if weights is None:
-        weights_sel = np.ones(len(idx_keep))
+        weight_vec = np.ones(len(base_mech.species_names))
     else:
-        weights_sel = np.array([weights[i] for i in idx_keep])
-    if not np.any(weights_sel > 0):
-        return -1e6, 1.0, size_frac, "no_pv_species"
-    pv_full = progress_variable(full_res.mass_fractions[:, idx_keep], weights_sel)
-    pv_red = progress_variable(res.mass_fractions, weights_sel)
-    err = pv_error(pv_full, pv_red)
-    fitness = -err - 0.1 * size_frac
-    return fitness, err, size_frac, reason
+        weight_vec = np.asarray(weights, dtype=float)
+
+    err = pv_error_aligned(
+        full_res.mass_fractions,
+        res.mass_fractions,
+        base_mech.species_names,
+        mech.species_names,
+        weight_vec,
+    )
+    delay_full = (
+        full_res.ignition_delay
+        if full_res.ignition_delay is not None
+        else ignition_delay(full_res.time, full_res.temperature)
+    )
+    delay_red = ignition_delay(res.time, res.temperature)
+    delay_diff = abs(delay_red - delay_full) / max(delay_full, 1e-12)
+    size_penalty = 0.1 * size_frac
+    fitness = -err - 10.0 * delay_diff - size_penalty
+    return fitness, err, delay_diff, size_penalty, reason
 
 
 def run_ga_reduction(
@@ -102,7 +122,7 @@ def run_ga_reduction(
     """Run the GA-based reduction on the given mechanism."""
 
     mech = Mechanism(mech_path)
-    full = run_constant_pressure(mech.solution, 1000.0, ct.one_atm, Y0, tf, nsteps=steps)
+    full = run_constant_pressure(mech.solution, 1500.0, ct.one_atm, Y0, tf, nsteps=steps)
     genome_len = len(mech.species_names)
 
     weights_path = os.path.join("data", "species_weights.json")
@@ -122,7 +142,7 @@ def run_ga_reduction(
     critical = [s for s in ["CH4", "O2", "N2"] if s in mech.species_names]
     critical_idxs = [mech.species_names.index(s) for s in critical]
     order = np.argsort(scores)
-    k = int(0.2 * genome_len)
+    k = max(1, int(0.3 * genome_len))
     pop_size = 12
     num_seed = max(1, pop_size // 2)
     init_pop = np.zeros((pop_size, genome_len), dtype=int)
@@ -133,23 +153,16 @@ def run_ga_reduction(
     seed_topk[critical_idxs] = 1
     init_pop[0] = seed_topk
 
-    # subsequent seeds start from all ones and remove lowest scoring species
-    base = np.ones(genome_len, dtype=int)
-    base[critical_idxs] = 1
+    # subsequent seeds start from the GNN top-k mask and randomly toggle
+    # additional species to introduce diversity
+    base = seed_topk.copy()
     for i in range(1, num_seed):
         seed = base.copy()
-        removed = 0
-        for idx in order:
-            if idx not in critical_idxs:
-                seed[idx] = 0
-                removed += 1
-                if removed == i:
-                    break
-                    
+        flip_candidates = np.where(seed == 0)[0]
+        if flip_candidates.size:
+            idx = np.random.choice(flip_candidates, i, replace=False)
+            seed[idx] = 1
         init_pop[i] = seed
-    for i in range(num_seed, pop_size):
-        init_pop[i] = np.random.randint(0, 2, genome_len)
-        init_pop[i][critical_idxs] = 1
 
     for i in range(num_seed, pop_size):
         init_pop[i] = np.random.randint(0, 2, genome_len)
@@ -162,7 +175,7 @@ def run_ga_reduction(
     ga_sel, ga_hist, debug = run_ga(
         genome_len,
         eval_fn,
-        GAOptions(population_size=pop_size, generations=6),
+        GAOptions(population_size=pop_size, generations=6, min_species=max(4, len(critical_idxs))),
         return_history=True,
         initial_population=init_pop,
         return_debug=True,
@@ -210,21 +223,19 @@ def save_metrics(
                 red_mech.remove_species(remove)
             res = run_constant_pressure(
                 red_mech.solution,
-                1000.0,
+                1500.0,
                 ct.one_atm,
                 Y0,
                 tf,
                 nsteps=len(full_res.time),
             )
-            weights_sel = np.array([weights[i] for i in idx_keep])
-            if not np.any(weights_sel > 0):
-                err = 1.0
-            else:
-                pv_full = progress_variable(
-                    full_res.mass_fractions[:, idx_keep], weights_sel
-                )
-                pv_red = progress_variable(res.mass_fractions, weights_sel)
-                err = pv_error(pv_full, pv_red)
+            err = pv_error_aligned(
+                full_res.mass_fractions,
+                res.mass_fractions,
+                mech.species_names,
+                red_mech.species_names,
+                weights,
+            )
             delay = ignition_delay(res.time, res.temperature)
             size_red = int(sel.sum())
             metrics_rows.append([
@@ -325,19 +336,27 @@ def full_pipeline(mech_path: str, out_dir: str, steps: int = 200, tf: float = 1.
     dbg_path = os.path.join(out_dir, "debug_fitness.csv")
     with open(dbg_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["generation", "individual", "pv_error", "size_penalty", "fitness", "reason"])
+        writer.writerow([
+            "generation",
+            "individual",
+            "pv_error",
+            "delay_diff",
+            "size_penalty",
+            "fitness",
+            "reason",
+        ])
         for g, gen in enumerate(debug):
             for i, det in enumerate(gen):
-                pv_err_g, size_pen, fit, reason, genome = det
-                writer.writerow([g, i, pv_err_g, size_pen, fit, reason])
+                pv_err_g, delay_diff_g, size_pen, fit, reason, genome = det
+                writer.writerow([g, i, pv_err_g, delay_diff_g, size_pen, fit, reason])
 
     # visual debugging for best individual of each generation
     for g, gen in enumerate(debug):
         if not gen:
             continue
-        scores = [d[2] for d in gen]
+        scores = [d[3] for d in gen]
         best_idx = int(np.argmax(scores))
-        genome = gen[best_idx][4]
+        genome = gen[best_idx][5]
         idx_keep = [i for i, bit in enumerate(genome) if bit]
         keep = [mech.species_names[i] for i in idx_keep]
         red_mech = Mechanism(mech_path)
@@ -347,7 +366,7 @@ def full_pipeline(mech_path: str, out_dir: str, steps: int = 200, tf: float = 1.
                 red_mech.remove_species(remove)
             res = run_constant_pressure(
                 red_mech.solution,
-                1000.0,
+                1500.0,
                 ct.one_atm,
                 Y0,
                 tf,

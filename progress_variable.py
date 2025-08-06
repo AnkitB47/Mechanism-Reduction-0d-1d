@@ -6,6 +6,7 @@ import logging
 from typing import Sequence
 
 import numpy as np
+from metrics import pv_error
 
 
 def progress_variable(Y: np.ndarray, weights: Sequence[float]) -> np.ndarray:
@@ -34,6 +35,38 @@ def progress_variable(Y: np.ndarray, weights: Sequence[float]) -> np.ndarray:
     if pv[-1] <= pv[0]:
         pv[-1] = pv[0] + 1e-6
     return pv
+
+
+def pv_error_aligned(
+    Y_full: np.ndarray,
+    Y_red: np.ndarray,
+    names_full: Sequence[str],
+    names_red: Sequence[str],
+    weights_full: Sequence[float],
+) -> float:
+    """Compute PV error aligning species by name.
+
+    This utility builds a weight vector for the reduced mechanism that matches
+    the ordering in ``Y_red`` while extracting the corresponding mass-fraction
+    columns from ``Y_full``.
+
+    Parameters
+    ----------
+    Y_full, Y_red:
+        Mass-fraction matrices for the full and reduced simulations.
+    names_full, names_red:
+        Species names corresponding to the columns of ``Y_full`` and
+        ``Y_red`` respectively.
+    weights_full:
+        Progress-variable weights defined for the full mechanism ordering.
+    """
+
+    name_to_idx = {n: i for i, n in enumerate(names_full)}
+    idx_full = [name_to_idx[n] for n in names_red]
+    weights = np.array([weights_full[name_to_idx[n]] for n in names_red])
+    pv_f = progress_variable(Y_full[:, idx_full], weights)
+    pv_r = progress_variable(Y_red, weights)
+    return pv_error(pv_f, pv_r)
 
 
 def optimise_weights(
