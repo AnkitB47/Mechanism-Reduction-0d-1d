@@ -3,6 +3,7 @@ import numpy as np
 import cantera as ct
 from reactor.batch import run_constant_pressure
 from progress_variable import progress_variable
+import pytest
 
 
 def test_progress_variable_changes():
@@ -18,3 +19,17 @@ def test_progress_variable_changes():
     pv = progress_variable(Y, weights)
     assert not np.allclose(pv, pv[0])
     assert pv[-1] > pv[0]
+
+
+def test_progress_variable_zero_weights():
+    Y = np.ones((5, 3))
+    weights = [0.0, 0.0, 0.0]
+    pv = progress_variable(Y, weights)
+    assert np.allclose(pv, 0.0)
+
+
+def test_progress_variable_weight_mismatch():
+    Y = np.zeros((4, 2))
+    weights = [1.0]
+    with pytest.raises(ValueError):
+        progress_variable(Y, weights)
