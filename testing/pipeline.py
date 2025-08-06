@@ -71,16 +71,17 @@ def evaluate_selection(
             tf,
             nsteps=len(full_res.time),
         )
-    except Exception:
-        return -1e6, 1.0, size_frac, "sim_failed"
+    except Exception as e:
+        return -1e6, 1.0, size_frac, f"sim_failed:{type(e).__name__}"
     if weights is None:
         weights_sel = np.ones(len(idx_keep))
     else:
         weights_sel = np.array([weights[i] for i in idx_keep])
+    idx_red = [mech.species_names.index(s) for s in keep]
     pv_full = progress_variable(full_res.mass_fractions[:, idx_keep], weights_sel)
-    pv_red = progress_variable(res.mass_fractions, weights_sel)
+    pv_red = progress_variable(res.mass_fractions[:, idx_red], weights_sel)
     err = pv_error(pv_full, pv_red)
-    fitness = -err - 0.01 * size_frac
+    fitness = -err - 0.1 * size_frac
     return fitness, err, size_frac, reason
 
 
@@ -119,17 +120,32 @@ def run_ga_reduction(
     critical = [s for s in ["CH4", "O2", "N2"] if s in mech.species_names]
     critical_idxs = [mech.species_names.index(s) for s in critical]
 
-    # seed part of the initial population with top-k species from GNN ranking
+    order = np.argsort(scores)
     k = int(0.2 * genome_len)
-    top_k_idxs = np.argsort(scores)[::-1][:k]
     pop_size = 12
     num_seed = max(1, pop_size // 2)
     init_pop = np.zeros((pop_size, genome_len), dtype=int)
-    for i in range(num_seed):
-        seed = np.zeros(genome_len, dtype=int)
-        seed[top_k_idxs] = 1
-        seed[critical_idxs] = 1
+
+    # first seed keeps only top-k species by score
+    seed_topk = np.zeros(genome_len, dtype=int)
+    seed_topk[order[-k:]] = 1
+    seed_topk[critical_idxs] = 1
+    init_pop[0] = seed_topk
+
+    # subsequent seeds start from all ones and remove lowest scoring species
+    base = np.ones(genome_len, dtype=int)
+    base[critical_idxs] = 1
+    for i in range(1, num_seed):
+        seed = base.copy()
+        removed = 0
+        for idx in order:
+            if idx not in critical_idxs:
+                seed[idx] = 0
+                removed += 1
+                if removed == i:
+                    break
         init_pop[i] = seed
+
     for i in range(num_seed, pop_size):
         init_pop[i] = np.random.randint(0, 2, genome_len)
         init_pop[i][critical_idxs] = 1
@@ -196,8 +212,9 @@ def save_metrics(
                 nsteps=len(full_res.time),
             )
             weights_sel = np.array([weights[i] for i in idx_keep])
+            idx_red = [red_mech.species_names.index(s) for s in keep]
             pv_full = progress_variable(full_res.mass_fractions[:, idx_keep], weights_sel)
-            pv_red = progress_variable(res.mass_fractions, weights_sel)
+            pv_red = progress_variable(res.mass_fractions[:, idx_red], weights_sel)
             err = pv_error(pv_full, pv_red)
             delay = ignition_delay(res.time, res.temperature)
             size_red = int(sel.sum())
