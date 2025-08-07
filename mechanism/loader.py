@@ -22,9 +22,36 @@ class Mechanism:
         remaining_species = [s for s in self.solution.species() if s.name not in species_list]
         self.solution = ct.Solution(thermo='IdealGas', kinetics='GasKinetics', species=remaining_species, reactions=self.solution.reactions())
 
-    def remove_reactions(self, indexes: List[int]):
-        reactions = [r for i, r in enumerate(self.solution.reactions()) if i not in indexes]
-        self.solution = ct.Solution(thermo='IdealGas', kinetics='GasKinetics', species=self.solution.species(), reactions=reactions)
+    def remove_species(self, remove: list[str]) -> None:
+        """Remove species and all reactions involving them."""
+        # Get allowed species set
+        remaining_species = [s for s in self.solution.species() if s.name not in remove]
+
+        # Filter reactions that only involve retained species
+        allowed_names = {s.name for s in remaining_species}
+        valid_reactions = []
+        for r in self.solution.reactions():
+            reactants = set(r.reactants.keys())
+            products = set(r.products.keys())
+            if reactants.issubset(allowed_names) and products.issubset(allowed_names):
+                valid_reactions.append(r)
+
+        # Rebuild solution
+        self.solution = ct.Solution(
+            thermo='IdealGas',
+            kinetics='GasKinetics',
+            species=remaining_species,
+            reactions=valid_reactions
+        )
 
     def save(self, out_path: str):
-        ct.save(out_path, self.solution)
+        """Save the current reduced mechanism to a YAML file."""
+        from cantera import Species
+        Species.save_yaml(
+            self.solution.species(),
+            out_path,
+            reactions=self.solution.reactions(),
+            transport=False,
+            thermo="IdealGas",
+            kinetics="GasKinetics"
+        )
