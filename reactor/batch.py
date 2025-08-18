@@ -1,7 +1,9 @@
+"""Batch reactor integrations used throughout the project."""
+
 import cantera as ct
 import numpy as np
 from dataclasses import dataclass
-from typing import Callable, Tuple, Optional
+from typing import Optional
 
 @dataclass
 class BatchResult:
@@ -17,88 +19,121 @@ def run_constant_pressure(
     gas: ct.Solution,
     T0: float,
     P0: float,
-    X0: dict,
+    X_or_Y0: dict,
     tf: float,
     nsteps: int = 1000,
     detect_ignition: bool = True,
+    use_mole: bool = True,
+    log_times: bool = False,
 ) -> BatchResult:
     """Integrate an adiabatic constant-pressure reactor.
 
-    Parameters
-    ----------
-    gas:
-        Cantera ``Solution`` object representing the mechanism.
-    T0, P0:
-        Initial temperature and pressure.
-    X0:
-        Initial composition specified as mole fractions. Using mole fractions
-        avoids accidental non-reactive mixtures when large values are passed
-        for stoichiometric ratios.
-    tf, nsteps:
-        Final time and number of integration steps.
-    detect_ignition:
-        If ``True`` the ignition delay is estimated from the temperature
-        derivative.
+    The integration samples the state at ``nsteps`` equally spaced times up to
+    ``tf`` (or geometrically spaced when ``log_times`` is ``True``).  The
+    initial state at ``t=0`` is always recorded.
     """
 
-    # Use TPX to ensure the provided composition is interpreted as mole
-    # fractions.  Previous versions used TPY which silently normalised the
-    # numbers as mass fractions and resulted in nearly non-reactive mixtures.
-    gas.TPX = T0, P0, X0
-    reactor = ct.IdealGasConstPressureReactor(gas, energy="on")
-    sim = ct.ReactorNet([reactor])
+    # Set consistent fractions
+    if use_mole:
+        gas.TPX = T0, P0, X_or_Y0  # mole fractions
+    else:
+        gas.TPY = T0, P0, X_or_Y0  # mass fractions
 
-    time: list[float] = []
-    T: list[float] = []
-    Y: list[np.ndarray] = []
+    r = ct.IdealGasConstPressureReactor(gas, energy="on")
+    net = ct.ReactorNet([r])
+    net.atol, net.rtol = 1e-18, 1e-8
+
+    # record t=0 **before** any advance
+    times = [0.0]
+    temps = [r.T]
+    Ys = [r.thermo.Y.copy()]
+
+    # advance on fixed times (optionally log-spaced)
+    if log_times:
+        ts = np.geomspace(1e-12, tf, nsteps)
+        ts = np.insert(ts, 0, 0.0)
+    else:
+        dt = tf / nsteps
+        ts = np.linspace(0.0, tf, nsteps + 1)
+
+    for t in ts[1:]:
+        net.advance(t)
+        times.append(t)
+        temps.append(r.T)
+        Ys.append(r.thermo.Y.copy())
+
+    times = np.array(times)
+    temps = np.array(temps)
+    Ys = np.vstack(Ys)
+
+    # ignition delay (max dT/dt)
     delay = None
-    last_dTdt = 0.0
-    dt = tf / nsteps
-    for _ in range(nsteps):
-        sim.advance(sim.time + dt)
-        time.append(sim.time)
-        T.append(reactor.T)
-        Y.append(reactor.Y)
-        if detect_ignition:
-            dTdt = (reactor.T - T[-2]) / dt if len(T) > 1 else 0.0
-            if last_dTdt > 0 and dTdt <= 0 and delay is None:
-                delay = time[-2]
-            last_dTdt = dTdt
+    if detect_ignition:
+        dTdt = np.gradient(temps, times, edge_order=2)
+        kmax = int(np.argmax(dTdt))
+        delay = float(times[kmax])
 
-    return BatchResult(np.array(time), np.array(T), np.array(Y), ignition_delay=delay)
+    # inert-run guard
+    dT = float(temps[-1] - temps[0])
+    dY = float(np.max(np.abs(Ys[-1] - Ys[0])))
+    if dT < 1.0 or dY < 1e-5:
+        raise RuntimeError(f"no_reaction: dT={dT:.3g}, max|ΔY|={dY:.3g}")
+
+    return BatchResult(times, temps, Ys, ignition_delay=delay)
 
 
 def run_constant_volume(
     gas: ct.Solution,
     T0: float,
     P0: float,
-    Y0: dict,
+    X_or_Y0: dict,
     tf: float,
     nsteps: int = 1000,
     detect_ignition: bool = True,
+    use_mole: bool = True,
+    log_times: bool = False,
 ) -> BatchResult:
-    """Integrate a constant-volume adiabatic reactor."""
+    """Integrate an adiabatic constant-volume reactor."""
 
-    # As with the constant-pressure case, interpret composition as mole
-    # fractions to avoid near-inert mixtures when using stoichiometric ratios.
-    gas.TPX = T0, P0, Y0
-    reactor = ct.IdealGasReactor(gas, energy="on")
-    sim = ct.ReactorNet([reactor])
-    time = []
-    T = []
-    Y = []
+    if use_mole:
+        gas.TPX = T0, P0, X_or_Y0
+    else:
+        gas.TPY = T0, P0, X_or_Y0
+
+    r = ct.IdealGasReactor(gas, energy="on")
+    net = ct.ReactorNet([r])
+    net.atol, net.rtol = 1e-18, 1e-8
+
+    times = [0.0]
+    temps = [r.T]
+    Ys = [r.thermo.Y.copy()]
+
+    if log_times:
+        ts = np.geomspace(1e-12, tf, nsteps)
+        ts = np.insert(ts, 0, 0.0)
+    else:
+        dt = tf / nsteps
+        ts = np.linspace(0.0, tf, nsteps + 1)
+
+    for t in ts[1:]:
+        net.advance(t)
+        times.append(t)
+        temps.append(r.T)
+        Ys.append(r.thermo.Y.copy())
+
+    times = np.array(times)
+    temps = np.array(temps)
+    Ys = np.vstack(Ys)
+
     delay = None
-    last_dTdt = 0.0
-    dt = tf / nsteps
-    for _ in range(nsteps):
-        sim.advance(sim.time + dt)
-        time.append(sim.time)
-        T.append(reactor.T)
-        Y.append(reactor.Y)
-        if detect_ignition:
-            dTdt = (reactor.T - T[-2]) / dt if len(T) > 1 else 0.0
-            if last_dTdt > 0 and dTdt <= 0 and delay is None:
-                delay = time[-2]
-            last_dTdt = dTdt
+    if detect_ignition:
+        dTdt = np.gradient(temps, times, edge_order=2)
+        kmax = int(np.argmax(dTdt))
+        delay = float(times[kmax])
 
-    return BatchResult(np.array(time), np.array(T), np.array(Y), ignition_delay=delay)
+    dT = float(temps[-1] - temps[0])
+    dY = float(np.max(np.abs(Ys[-1] - Ys[0])))
+    if dT < 1.0 or dY < 1e-5:
+        raise RuntimeError(f"no_reaction: dT={dT:.3g}, max|ΔY|={dY:.3g}")
+
+    return BatchResult(times, temps, Ys, ignition_delay=delay)

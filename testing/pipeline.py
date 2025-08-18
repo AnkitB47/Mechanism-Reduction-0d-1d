@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from typing import List, Sequence
 
 from mechanism.loader import Mechanism
+from mechanism.mix import methane_air_mole_fractions, mole_to_mass_fractions
 from reactor.batch import BatchResult, run_constant_pressure
 from metaheuristics.ga import run_ga, GAOptions
 from progress_variable import pv_error_aligned, progress_variable
@@ -24,7 +25,20 @@ from visualizations import (
 
 logger = logging.getLogger(__name__)
 
-def evaluate_selection(selection, base_mech, Y0, tf, full_res, weights, critical_idxs):
+
+def evaluate_selection(
+    selection,
+    base_mech,
+    Y0,
+    tf,
+    full_res,
+    weights,
+    critical_idxs,
+    T0,
+    p0,
+    steps,
+    log_times,
+):
     size_frac = float(selection.sum()) / len(selection)
     reason = ""
 
@@ -40,37 +54,60 @@ def evaluate_selection(selection, base_mech, Y0, tf, full_res, weights, critical
             mech.remove_species(remove)
         res = run_constant_pressure(
             mech.solution,
-            full_res.temperature[0],
-            ct.one_atm,
+            T0,
+            p0,
             Y0,
             tf,
-            nsteps=len(full_res.time),
+            nsteps=steps,
+            use_mole=False,
+            log_times=log_times,
         )
+    except RuntimeError as e:
+        if "no_reaction" in str(e):
+            return -1e6, 1.0, 1.0, 1.0, str(e)
+        return -1e6, 1.0, 1.0, 1.0, f"sim_failed:{type(e).__name__}"
     except Exception as e:
         return -1e6, 1.0, 1.0, 1.0, f"sim_failed:{type(e).__name__}"
-
-    temp_rise = res.temperature.max() - res.temperature[0]
-    species_change = np.max(np.abs(res.mass_fractions - res.mass_fractions[0]))
-    if temp_rise < 10 or species_change < 1e-6:
-        return -1e6, 1.0, 1.0, 1.0, "no_reaction"
 
     err = pv_error_aligned(
         full_res.mass_fractions,
         res.mass_fractions,
         base_mech.species_names,
         mech.species_names,
-        np.asarray(weights)
+        np.asarray(weights),
     )
-    delay_full = full_res.ignition_delay or ignition_delay(full_res.time, full_res.temperature)
-    delay_red = ignition_delay(res.time, res.temperature)
+    delay_full = full_res.ignition_delay or ignition_delay(full_res.time, full_res.temperature)[0]
+    delay_red, _ = ignition_delay(res.time, res.temperature)
     delay_diff = abs(delay_red - delay_full) / max(delay_full, 1e-12)
     fitness = -err - 10.0 * delay_diff - 0.1 * size_frac
     return fitness, err, delay_diff, 0.1 * size_frac, reason
 
 
-def run_ga_reduction(mech_path, Y0, tf, steps):
+def run_ga_reduction(mech_path, Y0, tf, steps, T0, p0, log_times):
     mech = Mechanism(mech_path)
-    full = run_constant_pressure(mech.solution, 1500.0, ct.one_atm, Y0, tf, nsteps=steps)
+    full = run_constant_pressure(
+        mech.solution,
+        T0,
+        p0,
+        Y0,
+        tf,
+        nsteps=steps,
+        use_mole=False,
+        log_times=log_times,
+    )
+
+    delay_full, slope_full = ignition_delay(full.time, full.temperature)
+    logger.info(
+        "Reference ignition delay %.3e s, max dT/dt %.3e K/s",
+        delay_full,
+        slope_full,
+    )
+
+    if (full.temperature[-1] - full.temperature[0]) < 5.0 or (
+        np.max(np.abs(full.mass_fractions[-1] - full.mass_fractions[0])) < 1e-6
+    ):
+        raise RuntimeError("Reference case looks inert (ΔT or ΔY too small). Check T0/φ/tf.")
+
     genome_len = len(mech.species_names)
 
     weights = np.ones(genome_len)
@@ -78,6 +115,9 @@ def run_ga_reduction(mech_path, Y0, tf, steps):
         with open("data/species_weights.json") as f:
             wmap = json.load(f)
             weights = np.array([wmap.get(s, 1e-3) for s in mech.species_names])
+    logger.info(
+        "Species weights (first 5): %s", list(zip(mech.species_names, weights))[:5]
+    )
 
     # === Construct graph and predict scores ===
     G = build_species_graph(mech.solution)
@@ -116,7 +156,9 @@ def run_ga_reduction(mech_path, Y0, tf, steps):
         init_pop[i] = individual
 
 
-    eval_fn = lambda sel: evaluate_selection(sel, mech, Y0, tf, full, weights, critical_idxs)
+    eval_fn = lambda sel: evaluate_selection(
+        sel, mech, Y0, tf, full, weights, critical_idxs, T0, p0, steps, log_times
+    )
 
     sel, hist, debug = run_ga(
         genome_len,
@@ -134,10 +176,34 @@ def run_ga_reduction(mech_path, Y0, tf, steps):
     return ["GA"], [sel], [hist], debug, full, weights
 
 
-def full_pipeline(mech_path: str, out_dir: str, steps: int = 200, tf: float = 1.0):
-    Y0 = {"CH4": 0.5, "O2": 1.0, "N2": 3.76}
-    names, sols, hists, debug, full, weights = run_ga_reduction(mech_path, Y0, tf, steps)
+def full_pipeline(
+    mech_path: str,
+    out_dir: str,
+    steps: int = 1000,
+    tf: float = 0.5,
+    phi: float | None = None,
+    preset: str = "methane_air",
+    T0: float | None = None,
+    p0: float | None = None,
+    log_times: bool = False,
+):
     mech = Mechanism(mech_path)
+
+    if preset == "methane_air":
+        phi = phi or 1.0
+        x0 = methane_air_mole_fractions(phi)
+        Y0 = mole_to_mass_fractions(mech.solution, x0)
+    else:
+        raise NotImplementedError(preset)
+
+    T0 = T0 or 1500.0
+    p0 = p0 or ct.one_atm
+    tf = min(tf, 1.0)
+
+    names, sols, hists, debug, full, weights = run_ga_reduction(
+        mech_path, Y0, tf, steps, T0, p0, log_times
+    )
+
     os.makedirs(out_dir, exist_ok=True)
 
     with open(os.path.join(out_dir, "ga_fitness.csv"), "w", newline="") as f:
@@ -160,25 +226,68 @@ def full_pipeline(mech_path: str, out_dir: str, steps: int = 200, tf: float = 1.
     red_mech = Mechanism(mech_path)
     red_mech.remove_species([s for s in red_mech.species_names if s not in keep])
 
-    red = run_constant_pressure(red_mech.solution, 1500.0, ct.one_atm, Y0, tf, nsteps=len(full.time))
+    red = run_constant_pressure(
+        red_mech.solution,
+        T0,
+        p0,
+        Y0,
+        tf,
+        nsteps=len(full.time) - 1,
+        use_mole=False,
+        log_times=log_times,
+    )
 
     key_species = [s for s in ["CH4", "O2", "CO2"] if s in mech.species_names]
-    idxs = [mech.species_names.index(s) for s in key_species]
-    plot_profiles(full, red, idxs, key_species, os.path.join(out_dir, "profiles"))
-    plot_ignition_delays([ignition_delay(red.time, red.temperature)], names, os.path.join(out_dir, "ignition_delay"))
+    plot_profiles(
+        full,
+        red,
+        mech.species_names,
+        red_mech.species_names,
+        key_species,
+        os.path.join(out_dir, "profiles"),
+    )
+    delay_red, slope_red = ignition_delay(red.time, red.temperature)
+    logger.info(
+        "Reduced ignition delay %.3e s, max dT/dt %.3e K/s",
+        delay_red,
+        slope_red,
+    )
+    plot_ignition_delays([delay_red], names, os.path.join(out_dir, "ignition_delay"))
     plot_convergence(hists, names, os.path.join(out_dir, "convergence"))
     plot_pv_errors(
-        [pv_error_aligned(full.mass_fractions, red.mass_fractions, mech.species_names, red_mech.species_names, weights)],
+        [
+            pv_error_aligned(
+                full.mass_fractions,
+                red.mass_fractions,
+                mech.species_names,
+                red_mech.species_names,
+                weights,
+            )
+        ],
         names,
         os.path.join(out_dir, "pv_error")
     )
 
 
-def plot_profiles(full_res: BatchResult, red_res: BatchResult, species_idx: Sequence[int], species_names: Sequence[str], out_base: str) -> None:
+def plot_profiles(
+    full_res: BatchResult,
+    red_res: BatchResult,
+    full_names: Sequence[str],
+    red_names: Sequence[str],
+    species: Sequence[str],
+    out_base: str,
+) -> None:
+    idxF = [full_names.index(s) for s in species if s in full_names]
+    idxR = [red_names.index(s) for s in species if s in red_names]
+    common = [s for s in species if s in full_names and s in red_names]
+    idxF = [full_names.index(s) for s in common]
+    idxR = [red_names.index(s) for s in common]
+
     fig, ax = plt.subplots()
-    for idx, name in zip(species_idx, species_names):
-        ax.plot(full_res.time, full_res.mass_fractions[:, idx], label=f"{name} full")
-        ax.plot(red_res.time, red_res.mass_fractions[:, idx], "--", label=f"{name} red")
+    for i, s in enumerate(common):
+        ax.plot(full_res.time, full_res.mass_fractions[:, idxF[i]], label=f"{s} full")
+        ax.plot(red_res.time, red_res.mass_fractions[:, idxR[i]], "--", label=f"{s} red")
+    ax.set_xscale("log")
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Mass Fraction")
     ax.legend()
