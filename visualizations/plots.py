@@ -1,13 +1,16 @@
 from __future__ import annotations
-"""Plotting utilities for mechanism reduction results."""
+"""Plotting utilities for mechanism reduction results (paper-ready)."""
 
 import os
-from typing import Iterable, Sequence
+from typing import Iterable, Sequence, Tuple, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 
+# -------------------------
+# small helpers
+# -------------------------
 def _save(fig: plt.Figure, out_base: str) -> None:
     """Save figure as PNG and PDF (pub-ready)."""
     os.makedirs(os.path.dirname(out_base), exist_ok=True)
@@ -17,6 +20,17 @@ def _save(fig: plt.Figure, out_base: str) -> None:
     plt.close(fig)
 
 
+def _downsample_markevery(n: int, target: int = 30) -> int:
+    """Pick a sensible 'markevery' so ~target markers appear."""
+    if n <= target:
+        return 1
+    step = int(np.ceil(n / target))
+    return max(step, 2)
+
+
+# -------------------------
+# legacy/simple plots
+# -------------------------
 def plot_mole_fraction(
     time_full: np.ndarray,
     y_full: np.ndarray,
@@ -42,7 +56,6 @@ def plot_ignition_delays(delays: Sequence[float], labels: Sequence[str], out_bas
     bars = ax.bar(labels, delays)
     ax.set_ylabel("Ignition delay [s]")
     ax.grid(axis="y", alpha=0.3)
-    # annotate values
     for b, v in zip(bars, delays):
         ax.annotate(f"{v:.2e}", (b.get_x() + b.get_width()/2, b.get_height()),
                     ha="center", va="bottom", fontsize=9, xytext=(0, 3), textcoords="offset points")
@@ -62,6 +75,23 @@ def plot_convergence(histories: Sequence[Iterable[float]], labels: Sequence[str]
     _save(fig, out_base)
 
 
+# -------------------------
+# paper-style profiles
+# -------------------------
+# (fixed colors per species so legend पढ़ते ही पहचान बने)
+_COLOR = {
+    "O2":  "#1f77b4",  # blue
+    "CO2": "#2ca02c",  # green
+    "H2O": "#d62728",  # red
+    "CO":  "#17becf",  # teal
+    "CH4": "#9467bd",  # purple
+    "OH":  "#8c564b",  # brown
+}
+
+def _style_color(name: str, fallback: str) -> str:
+    return _COLOR.get(name, fallback)
+
+
 def plot_species_profiles(
     time_full: np.ndarray,
     Y_full: np.ndarray,
@@ -71,14 +101,20 @@ def plot_species_profiles(
     names_red: Sequence[str],
     species: Sequence[str],
     out_base: str,
+    *,
+    tau_full: Optional[float] = None,
+    zoom_decades_left: float = 2.0,
+    zoom_decades_right: float = 1.0,
+    ylim: Optional[Tuple[float, float]] = None,
 ) -> None:
-    """Overlay species profiles for full vs. reduced mechanisms.
-
-    Full profiles are drawn as solid lines, while reduced-problem profiles are
-    plotted using unfilled circle markers. The time axis uses a logarithmic
-    scale for clarity.
     """
-
+    Paper-style overlay of species profiles.
+    - full = solid line
+    - reduced = hollow circle markers (same color)
+    - log x-axis; optional zoom around ignition delay `tau_full`
+    - optional y-limits for a fixed vertical range (e.g., (-0.02, 0.45))
+    """
+    # common species in the requested order
     common = [s for s in species if s in names_full and s in names_red]
     if not common:
         fig, ax = plt.subplots()
@@ -90,43 +126,54 @@ def plot_species_profiles(
     idxR = [names_red.index(s) for s in common]
 
     fig, ax = plt.subplots()
+
+    # vertical guideline at ignition delay
+    if tau_full is not None and np.isfinite(tau_full) and tau_full > 0:
+        ax.axvline(tau_full, color="0.4", ls="--", lw=1, alpha=0.8, zorder=0)
+
+    # draw series
+    n_full = len(time_full)
+    mk_every = _downsample_markevery(len(time_red))
     for i, s in enumerate(common):
-        line, = ax.semilogx(
-            time_full,
-            Y_full[:, idxF[i]],
-            linewidth=2,
-            label=f"{s} full",
-        )
-        ax.semilogx(
-            time_red,
-            Y_red[:, idxR[i]],
-            linestyle="none",
-            marker="o",
-            markersize=4,
-            fillstyle="none",
-            color=line.get_color(),
-            markevery=20,
-            label=f"{s} reduced",
-        )
+        color = _style_color(s, fallback=f"C{i}")
+        # full = line
+        ax.semilogx(time_full, Y_full[:, idxF[i]],
+                    linewidth=2.2, color=color, label=f"{s} full")
+        # reduced = hollow dot markers
+        ax.semilogx(time_red, Y_red[:, idxR[i]],
+                    linestyle="none", marker="o", markersize=4.0,
+                    fillstyle="none", color=color, markevery=mk_every,
+                    label=f"{s} reduced")
+
+    # zoom window in time
+    if tau_full is not None and np.isfinite(tau_full) and tau_full > 0:
+        t_min = max(np.min(time_full), tau_full / (10.0 ** zoom_decades_left))
+        t_max = min(np.max(time_full), tau_full * (10.0 ** zoom_decades_right))
+        if t_min < t_max:
+            ax.set_xlim(t_min, t_max)
 
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Mass fraction")
     ax.grid(True, which="both", alpha=0.3)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+
+    # compact legend
     ax.legend(ncol=2, frameon=False)
     _save(fig, out_base)
 
 
 def plot_species_residuals(
-    time: np.ndarray,
+    time_full: np.ndarray,
     Y_full: np.ndarray,
+    time_red: np.ndarray,
     Y_red: np.ndarray,
     names_full: Sequence[str],
     names_red: Sequence[str],
     species: Sequence[str],
     out_base: str,
 ) -> None:
-    """Plot residuals ``Y_full - Y_red`` for selected species."""
-
+    """Plot residuals ``Y_full(t) - Y_red(t)`` on full time grid (reduced is interpolated)."""
     common = [s for s in species if s in names_full and s in names_red]
     if not common:
         fig, ax = plt.subplots()
@@ -134,17 +181,24 @@ def plot_species_residuals(
         _save(fig, out_base)
         return
 
-    idxF = [names_full.index(s) for s in common]
-    idxR = [names_red.index(s) for s in common]
+    # interpolate reduced to full grid so ΔY aligns
+    Y_red_interp = np.empty((len(time_full), len(common)))
+    for j, s in enumerate(common):
+        jF = names_full.index(s)
+        jR = names_red.index(s)
+        Y_red_interp[:, j] = np.interp(time_full, time_red, Y_red[:, jR])
 
     fig, ax = plt.subplots()
-    for i, s in enumerate(common):
-        ax.semilogx(time, Y_full[:, idxF[i]] - Y_red[:, idxR[i]], label=s)
+    for j, s in enumerate(common):
+        color = _style_color(s, fallback=f"C{j}")
+        ax.semilogx(time_full, Y_full[:, names_full.index(s)] - Y_red_interp[:, j],
+                    label=s, color=color)
 
+    ax.axhline(0.0, color="0.4", lw=0.8, ls=":")
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("ΔY (full - red)")
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(frameon=False)
+    ax.legend(frameon=False, ncol=2)
     _save(fig, out_base)
 
 
@@ -154,20 +208,17 @@ def plot_progress_variable(
     time_red: np.ndarray,
     pv_red: np.ndarray,
     out_base: str,
+    *,
+    tau: Optional[float] = None,
 ) -> None:
     """Overlay progress variables for full vs. reduced mechanisms."""
-
     fig, ax = plt.subplots()
     ax.semilogx(time_full, pv_full, label="PV full", linewidth=2)
-    ax.semilogx(
-        time_red,
-        pv_red,
-        linestyle="none",
-        marker="o",
-        fillstyle="none",
-        markevery=20,
-        label="PV reduced",
-    )
+    mk_every = _downsample_markevery(len(time_red))
+    ax.semilogx(time_red, pv_red, linestyle="none", marker="o",
+                fillstyle="none", markevery=mk_every, label="PV reduced")
+    if tau is not None and np.isfinite(tau) and tau > 0:
+        ax.axvline(tau, color="0.4", ls="--", lw=1)
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Progress variable")
     ax.grid(True, which="both", alpha=0.3)
@@ -185,30 +236,16 @@ def plot_timescales(
     out_base: str,
 ) -> None:
     """Overlay PVTS and SPTS time scales for full and reduced cases."""
-
     fig, ax = plt.subplots()
+    mk_every = _downsample_markevery(len(time_red))
     ax.semilogx(time_full, tau_pv_full, label="PVTS full", linewidth=2)
-    ax.semilogx(
-        time_red,
-        tau_pv_red,
-        linestyle="--",
-        marker="o",
-        markevery=20,
-        fillstyle="none",
-        label="PVTS reduced",
-    )
+    ax.semilogx(time_red, tau_pv_red, linestyle="--", marker="o",
+                markevery=mk_every, fillstyle="none", label="PVTS reduced")
     ax.semilogx(time_full, tau_spts_full, label="SPTS full", linewidth=2)
-    ax.semilogx(
-        time_red,
-        tau_spts_red,
-        linestyle="--",
-        marker="s",
-        markevery=20,
-        fillstyle="none",
-        label="SPTS reduced",
-    )
+    ax.semilogx(time_red, tau_spts_red, linestyle="--", marker="s",
+                markevery=mk_every, fillstyle="none", label="SPTS reduced")
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Time scale [s]")
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(frameon=False)
+    ax.legend(frameon=False, ncol=2)
     _save(fig, out_base)

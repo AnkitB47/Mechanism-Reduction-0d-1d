@@ -584,7 +584,7 @@ def full_pipeline(
                 pv_err, delay_diff, size_pen, tau_mis, reason, keep_cnt, dT, dY, delay_red, fit, genome = d
                 writer.writerow([g, i, pv_err, delay_diff, size_pen, tau_mis, reason, keep_cnt, dT, dY, delay_red, fit])
 
-    # Build reduced mechanism from best selection
+        # Build reduced mechanism from best selection
     best_sel = sols[0]
     keep = [mech.species_names[i] for i, bit in enumerate(best_sel) if bit]
 
@@ -595,21 +595,26 @@ def full_pipeline(
         for s in keep:
             f.write(s + "\n")
 
+    # Re-run reduced on same window/grid choice
     red = runner(
         red_mech.solution,
         T0,
         p0,
         Y0,
         tf,
-        nsteps=len(full.time) - 1,
+        nsteps=len(full.time) - 1,   # match density closely
         use_mole=False,
         log_times=log_times,
     )
 
-    # choose informative species (like the paper)
+    # Informative species (like paper)
     key_species = [s for s in ["O2", "CO2", "H2O", "CO", "CH4", "OH"] if s in mech.species_names]
 
-    # 1) Species profiles (full=solid line, reduced=markers)
+    # --- ignition delays (both)
+    delay_full, _ = ignition_delay(full.time, full.temperature)
+    delay_red,  _ = ignition_delay(red.time,  red.temperature)
+
+    # 1) Species profiles (full=solid, reduced=hollow markers) with τ markers
     plot_species_profiles(
         full.time,
         full.mass_fractions,
@@ -619,12 +624,17 @@ def full_pipeline(
         red_mech.species_names,
         key_species,
         os.path.join(out_dir, "profiles"),
+        tau_full=delay_full,          # ignition marker + zoom anchor
+        zoom_decades_left=2.0,        # ~2 decades left of tau
+        zoom_decades_right=1.0,       # ~1 decade right of tau
+        ylim=(-0.02, 0.45),           # Fig. 6 vertical range (mass-fraction)
     )
 
-    # Residuals (full - reduced)
+    # 1b) Residuals ΔY = Y_full(t_full) − Y_red interpolated to t_full
     plot_species_residuals(
         full.time,
         full.mass_fractions,
+        red.time,
         red.mass_fractions,
         mech.species_names,
         red_mech.species_names,
@@ -632,9 +642,7 @@ def full_pipeline(
         os.path.join(out_dir, "profiles_residual"),
     )
 
-    # 2) Ignition delay (two bars: full vs reduced)
-    delay_full, _ = ignition_delay(full.time, full.temperature)
-    delay_red, _ = ignition_delay(red.time, red.temperature)
+    # 2) Ignition delay bars
     plot_ignition_delays(
         delays=[delay_full, delay_red],
         labels=["Full", "Reduced"],
@@ -644,7 +652,7 @@ def full_pipeline(
     # 3) GA convergence
     plot_convergence(hists, names, os.path.join(out_dir, "convergence"))
 
-    # 4) PV error (aligned) + overlay PV
+    # 4) PV error (aligned) + PV overlay
     pv_err = pv_error_aligned(
         full.mass_fractions,
         red.mass_fractions,
@@ -657,26 +665,27 @@ def full_pipeline(
         writer.writerow(["pv_error"])
         writer.writerow([pv_err])
 
-    # PV overlay
+    # PV overlay (compute BEFORE plotting)
     map_full = {s: i for i, s in enumerate(mech.species_names)}
-    map_red = {s: i for i, s in enumerate(red_mech.species_names)}
+    map_red  = {s: i for i, s in enumerate(red_mech.species_names)}
     use = [s for s in PV_SPECIES_DEFAULT if s in map_full and s in map_red]
     w = np.array([weights[map_full[s]] for s in use])
     pv_full = (full.mass_fractions[:, [map_full[s] for s in use]] * w).sum(axis=1)
-    pv_red = (red.mass_fractions[:, [map_red[s] for s in use]] * w).sum(axis=1)
+    pv_red  = (red.mass_fractions[:,  [map_red[s]  for s in use]] * w).sum(axis=1)
+
     plot_progress_variable(
-        full.time,
-        pv_full,
-        red.time,
-        pv_red,
+        full.time, pv_full,
+        red.time,  pv_red,
         os.path.join(out_dir, "pv_overlay"),
+        tau=delay_full,
     )
 
-    # Timescales overlay
+    # 5) Time-scales overlay (PVTS / SPTS)
     _, tau_pv_full = pv_timescale(full.time, full.mass_fractions, mech.species_names)
-    _, tau_pv_red = pv_timescale(red.time, red.mass_fractions, red_mech.species_names)
-    tau_spts_full = spts(full.time, full.mass_fractions)
-    tau_spts_red = spts(red.time, red.mass_fractions)
+    _, tau_pv_red  = pv_timescale(red.time,  red.mass_fractions,  red_mech.species_names)
+    tau_spts_full  = spts(full.time, full.mass_fractions)
+    tau_spts_red   = spts(red.time,  red.mass_fractions)
+
     plot_timescales(
         full.time,
         tau_pv_full,
@@ -686,34 +695,20 @@ def full_pipeline(
         tau_spts_red,
         os.path.join(out_dir, "timescales"),
     )
+
     with open(os.path.join(out_dir, "timescales.csv"), "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "time",
-            "tau_pv_full",
-            "tau_pv_red",
-            "tau_spts_full",
-            "tau_spts_red",
-        ])
-        for t, tpvf, tpvr, tsf, tsr in zip(
-            full.time, tau_pv_full, tau_pv_red, tau_spts_full, tau_spts_red
-        ):
+        writer.writerow(["time","tau_pv_full","tau_pv_red","tau_spts_full","tau_spts_red"])
+        for t, tpvf, tpvr, tsf, tsr in zip(full.time, tau_pv_full, tau_pv_red, tau_spts_full, tau_spts_red):
             writer.writerow([t, tpvf, tpvr, tsf, tsr])
 
-    print(
-        f"\nSummary:\n{'Mechanism':>10} {'Species':>8} {'Reactions':>10} {'Delay[s]':>12} {'PV err':>8}"
-    )
-    print(
-        f"{'Full':>10} {len(mech.species_names):8d} {len(mech.reactions()):10d} {delay_full:12.3e} {0.0:8.3f}"
-    )
-    print(
-        f"{'Reduced':>10} {len(red_mech.species_names):8d} {len(red_mech.reactions()):10d} {delay_red:12.3e} {pv_err:8.3f}"
-    )
+    # --- Console summary
+    print(f"\nSummary:\n{'Mechanism':>10} {'Species':>8} {'Reactions':>10} {'Delay[s]':>12} {'PV err':>8}")
+    print(f"{'Full':>10} {len(mech.species_names):8d} {len(mech.reactions()):10d} {delay_full:12.3e} {0.0:8.3f}")
+    print(f"{'Reduced':>10} {len(red_mech.species_names):8d} {len(red_mech.reactions()):10d} {delay_red:12.3e} {pv_err:8.3f}")
     if pv_err < 0.05:
-        print(
-            "Summary:\n"
-            f"  Species: {len(mech.species_names)} -> {len(red_mech.species_names)}\n"
-            f"  Reactions: {len(mech.reactions())} -> {len(red_mech.reactions())}\n"
-            f"  Delay_full/red: {delay_full:.3e} / {delay_red:.3e} s\n"
-            f"  PV_error: {pv_err*100:.1f}%"
-        )
+        print("Summary:\n"
+              f"  Species: {len(mech.species_names)} -> {len(red_mech.species_names)}\n"
+              f"  Reactions: {len(mech.reactions())} -> {len(red_mech.reactions())}\n"
+              f"  Delay_full/red: {delay_full:.3e} / {delay_red:.3e} s\n"
+              f"  PV_error: {pv_err*100:.1f}%")
