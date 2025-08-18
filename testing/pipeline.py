@@ -237,36 +237,40 @@ def full_pipeline(
         log_times=log_times,
     )
 
-    key_species = [s for s in ["CH4", "O2", "CO2"] if s in mech.species_names]
+    # choose informative species (like the paper)
+    key_species = [s for s in ["CH4", "O2", "CO2", "CO", "H2O", "OH"] if s in mech.species_names]
+
+    # 1) Species profiles (full=solid line, reduced=dots)
     plot_profiles(
-        full,
-        red,
+        full_res=full,
+        red_res=red,
+        full_names=mech.species_names,
+        red_names=red_mech.species_names,
+        species=key_species,
+        out_base=os.path.join(out_dir, "profiles"),
+    )
+
+    # 2) Ignition delay (two bars: full vs reduced)
+    delay_full, _ = ignition_delay(full.time, full.temperature)
+    delay_red,  _ = ignition_delay(red.time,  red.temperature)
+    plot_ignition_delays(
+        delays=[delay_full, delay_red],
+        labels=["Full", "Reduced"],
+        out_base=os.path.join(out_dir, "ignition_delay"),
+    )
+
+    # 3) GA convergence
+    plot_convergence(hists, names, os.path.join(out_dir, "convergence"))
+
+    # 4) PV error (aligned)
+    pv_err = pv_error_aligned(
+        full.mass_fractions,
+        red.mass_fractions,
         mech.species_names,
         red_mech.species_names,
-        key_species,
-        os.path.join(out_dir, "profiles"),
+        weights,
     )
-    delay_red, slope_red = ignition_delay(red.time, red.temperature)
-    logger.info(
-        "Reduced ignition delay %.3e s, max dT/dt %.3e K/s",
-        delay_red,
-        slope_red,
-    )
-    plot_ignition_delays([delay_red], names, os.path.join(out_dir, "ignition_delay"))
-    plot_convergence(hists, names, os.path.join(out_dir, "convergence"))
-    plot_pv_errors(
-        [
-            pv_error_aligned(
-                full.mass_fractions,
-                red.mass_fractions,
-                mech.species_names,
-                red_mech.species_names,
-                weights,
-            )
-        ],
-        names,
-        os.path.join(out_dir, "pv_error")
-    )
+    plot_pv_errors([pv_err], ["GA"], os.path.join(out_dir, "pv_error"))
 
 
 def plot_profiles(
@@ -277,21 +281,46 @@ def plot_profiles(
     species: Sequence[str],
     out_base: str,
 ) -> None:
-    idxF = [full_names.index(s) for s in species if s in full_names]
-    idxR = [red_names.index(s) for s in species if s in red_names]
+    # intersection & indices (align by name)
     common = [s for s in species if s in full_names and s in red_names]
+    if not common:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "No common species to plot", ha="center")
+        fig.savefig(out_base + ".png", dpi=300, bbox_inches="tight")
+        fig.savefig(out_base + ".pdf", bbox_inches="tight")
+        plt.close(fig)
+        return
+
     idxF = [full_names.index(s) for s in common]
-    idxR = [red_names.index(s) for s in common]
+    idxR = [red_names.index(s)  for s in common]
 
     fig, ax = plt.subplots()
     for i, s in enumerate(common):
-        ax.plot(full_res.time, full_res.mass_fractions[:, idxF[i]], label=f"{s} full")
-        ax.plot(red_res.time, red_res.mass_fractions[:, idxR[i]], "--", label=f"{s} red")
-    ax.set_xscale("log")
+        # full: solid line
+        line, = ax.semilogx(
+            full_res.time,
+            full_res.mass_fractions[:, idxF[i]],
+            label=f"{s} full",
+            linewidth=2,
+        )
+        # reduced: markers only, same color
+        ax.semilogx(
+            red_res.time,
+            red_res.mass_fractions[:, idxR[i]],
+            linestyle="none",
+            marker="o",
+            markersize=3.0,
+            markerfacecolor="none",
+            markeredgewidth=1.2,
+            color=line.get_color(),
+            label=f"{s} reduced",
+        )
+
     ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Mass Fraction")
-    ax.legend()
+    ax.set_ylabel("Mass fraction")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(ncol=2, frameon=False)
     fig.tight_layout()
-    fig.savefig(out_base + ".png")
-    fig.savefig(out_base + ".pdf")
+    fig.savefig(out_base + ".png", dpi=300, bbox_inches="tight")
+    fig.savefig(out_base + ".pdf", bbox_inches="tight")
     plt.close(fig)
