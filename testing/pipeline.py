@@ -193,13 +193,14 @@ def evaluate_selection(
     runner,
     tau_pv_full,
     tau_spts_full,
+    size_weight: float,
+    target_species: int | None,
+    species_weight: float,
 ):
-    size_frac = float(selection.sum()) / len(selection)
     reason = ""
 
-    # hard guard for missing critical species
     if critical_idxs and (selection.sum() < max(4, len(critical_idxs)) or np.any(selection[critical_idxs] == 0)):
-        info = (1.0, 1.0, 0.0, 0.0, "missing_critical", int(selection.sum()), 0.0, 0.0, 0.0)
+        info = (1.0, 1.0, 0.0, 0.0, 0.0, "missing_critical", int(selection.sum()), 0.0, 0.0, 0.0)
         return -1e6, *info
 
     sel = selection.copy()
@@ -228,10 +229,10 @@ def evaluate_selection(
                 sel[critical_idxs] = 1
                 attempt += 1
                 continue
-            info = (1.0, 1.0, 0.0, 0.0, str(e), int(sel.sum()), 0.0, 0.0, 0.0)
+            info = (1.0, 1.0, 0.0, 0.0, 0.0, str(e), int(sel.sum()), 0.0, 0.0, 0.0)
             return -1e6, *info
         except Exception as e:
-            info = (1.0, 1.0, 0.0, 0.0, f"sim_failed:{type(e).__name__}", int(sel.sum()), 0.0, 0.0, 0.0)
+            info = (1.0, 1.0, 0.0, 0.0, 0.0, f"sim_failed:{type(e).__name__}", int(sel.sum()), 0.0, 0.0, 0.0)
             return -1e6, *info
         break
 
@@ -257,19 +258,39 @@ def evaluate_selection(
     log_red_spts = np.log10(tau_spts_red + 1e-30)
     tau_mis = np.linalg.norm(log_full_pv - log_red_pv) + np.linalg.norm(log_full_spts - log_red_spts)
 
-    # penalty if >40% species removed
-    size_pen = 2.0 * max(0.0, size_frac - 0.4)
+    keep_cnt = int(sel.sum())
+    size_pen = max(0.0, keep_cnt / len(selection) - 0.4)
+    size_pen = size_weight * size_pen
+    if target_species:
+        qpen = ((keep_cnt - target_species) / len(selection)) ** 2
+        size_pen += size_weight * qpen
 
-    alpha_f, beta_f, gamma_f, delta_f = 1.0, 10.0, 1.0, 1.0
-    fitness = -(alpha_f * err + beta_f * delay_diff + gamma_f * size_pen + delta_f * tau_mis)
+    key = [s for s in ["O2", "CO2", "H2O", "CO", "CH4", "OH"] if s in mech.species_names and s in base_mech.species_names]
+    mf_full = {s: base_mech.species_names.index(s) for s in key}
+    mf_red = {s: mech.species_names.index(s) for s in key}
+    delay_full = full_res.ignition_delay or ignition_delay(full_res.time, full_res.temperature)[0]
+    tcut = delay_full * 1.05
+    mask_f = full_res.time >= tcut
+    mask_r = res.time >= tcut
+    spec_err = 0.0
+    for s in key:
+        yf = full_res.mass_fractions[mask_f, mf_full[s]]
+        yr = np.interp(full_res.time[mask_f], res.time[mask_r], res.mass_fractions[mask_r, mf_red[s]])
+        spec_err += float(np.linalg.norm(yf - yr) / (np.linalg.norm(yf) + 1e-12))
+    if key:
+        spec_err /= len(key)
+
+    alpha_f, beta_f, delta_f = 1.0, 10.0, 1.0
+    fitness = -(alpha_f * err + beta_f * delay_diff + size_pen + delta_f * tau_mis + species_weight * spec_err)
 
     info = (
         float(err),
         float(delay_diff),
         float(size_pen),
         float(tau_mis),
+        float(spec_err),
         reason,
-        int(sel.sum()),
+        keep_cnt,
         float(delta_T),
         float(delta_Y),
         float(delay_red),
@@ -304,6 +325,11 @@ def run_ga_reduction(
     steps_short: int,
     cache_labels: bool,
     isothermal: bool,
+    min_species: int | None = None,
+    max_species: int | None = None,
+    target_species: int | None = None,
+    size_weight: float = 3.0,
+    species_weight: float = 2.0,
 ):
     mech = Mechanism(mech_path)
 
@@ -447,10 +473,13 @@ def run_ga_reduction(
         runner,
         tau_pv_full,
         tau_spts_full,
+        size_weight,
+        target_species,
+        species_weight,
     )
 
-    min_species = len(critical_idxs) + 5
-    max_species = max(min_species + 5, int(0.6 * genome_len))
+    ms = min_species or (len(critical_idxs) + 5)
+    M = max_species or max(ms + 5, int(0.6 * genome_len))
 
     sel, hist, debug = run_ga(
         genome_len,
@@ -458,8 +487,8 @@ def run_ga_reduction(
         GAOptions(
             population_size=pop_size,
             generations=25,
-            min_species=min_species,
-            max_species=max_species,
+            min_species=ms,
+            max_species=M,
             mutation_rate=0.2,
         ),
         return_history=True,
@@ -473,15 +502,16 @@ def run_ga_reduction(
     for g, gen in enumerate(debug):
         # fitness is at -2 index (last before genome)
         best_g = max(gen, key=lambda x: x[-2])
-        pv_err, delay_diff, size_pen, tau_mis, reason, keep_cnt, dT, dY, delay_red, fit, genome = best_g
+        pv_err, delay_diff, size_pen, tau_mis, spec_err, reason, keep_cnt, dT, dY, delay_red, fit, genome = best_g
         logger.info(
-            "gen %02d keep=%d ΔT=%.3e delay=%.3e pv_err=%.3e τ_mis=%.3e fitness=%.3e",
+            "gen %02d keep=%d ΔT=%.3e delay=%.3e pv_err=%.3e τ_mis=%.3e spec_err=%.3e fitness=%.3e",
             g,
             keep_cnt,
             dT,
             delay_red,
             pv_err,
             tau_mis,
+            spec_err,
             fit,
         )
         with open(os.path.join("results", f"best_selection_gen{g:02d}.txt"), "w") as f:
@@ -512,6 +542,13 @@ def full_pipeline(
     steps_short: int | None = None,
     cache_labels: bool = True,
     isothermal: bool = False,
+    min_species: int | None = None,
+    max_species: int | None = None,
+    target_species: int | None = None,
+    size_weight: float = 3.0,
+    species_weight: float = 2.0,
+    zoom_around_tau: float | None = None,
+    ymax: float | None = None,
 ):
     mech = Mechanism(mech_path)
 
@@ -551,6 +588,11 @@ def full_pipeline(
         steps_short,
         cache_labels,
         use_iso,
+        min_species=min_species,
+        max_species=max_species,
+        target_species=target_species,
+        size_weight=size_weight,
+        species_weight=species_weight,
     )
 
     os.makedirs(out_dir, exist_ok=True)
@@ -572,6 +614,7 @@ def full_pipeline(
             "delay_diff",
             "size_penalty",
             "tau_mismatch",
+            "spec_err",
             "reason",
             "keep_count",
             "delta_T",
@@ -581,8 +624,8 @@ def full_pipeline(
         ])
         for g, gen in enumerate(debug):
             for i, d in enumerate(gen):
-                pv_err, delay_diff, size_pen, tau_mis, reason, keep_cnt, dT, dY, delay_red, fit, genome = d
-                writer.writerow([g, i, pv_err, delay_diff, size_pen, tau_mis, reason, keep_cnt, dT, dY, delay_red, fit])
+                pv_err, delay_diff, size_pen, tau_mis, spec_err, reason, keep_cnt, dT, dY, delay_red, fit, genome = d
+                writer.writerow([g, i, pv_err, delay_diff, size_pen, tau_mis, spec_err, reason, keep_cnt, dT, dY, delay_red, fit])
 
         # Build reduced mechanism from best selection
     best_sel = sols[0]
@@ -614,7 +657,13 @@ def full_pipeline(
     delay_full, _ = ignition_delay(full.time, full.temperature)
     delay_red,  _ = ignition_delay(red.time,  red.temperature)
 
-    # 1) Species profiles (full=solid, reduced=hollow markers) with τ markers
+    if zoom_around_tau is not None:
+        half = float(zoom_around_tau)
+        xlim = (delay_full / (10 ** half), delay_full * (10 ** half))
+    else:
+        xlim = None
+    ylim = (None, ymax) if ymax is not None else None
+
     plot_species_profiles(
         full.time,
         full.mass_fractions,
@@ -624,13 +673,12 @@ def full_pipeline(
         red_mech.species_names,
         key_species,
         os.path.join(out_dir, "profiles"),
-        tau_full=delay_full,          # ignition marker + zoom anchor
-        zoom_decades_left=2.0,        # ~2 decades left of tau
-        zoom_decades_right=1.0,       # ~1 decade right of tau
-        ylim=(-0.02, 0.45),           # Fig. 6 vertical range (mass-fraction)
+        tau_full=delay_full,
+        tau_red=delay_red,
+        xlim=xlim,
+        ylim=ylim,
     )
 
-    # 1b) Residuals ΔY = Y_full(t_full) − Y_red interpolated to t_full
     plot_species_residuals(
         full.time,
         full.mass_fractions,
@@ -640,6 +688,7 @@ def full_pipeline(
         red_mech.species_names,
         key_species,
         os.path.join(out_dir, "profiles_residual"),
+        xlim=xlim,
     )
 
     # 2) Ignition delay bars
@@ -674,10 +723,13 @@ def full_pipeline(
     pv_red  = (red.mass_fractions[:,  [map_red[s]  for s in use]] * w).sum(axis=1)
 
     plot_progress_variable(
-        full.time, pv_full,
-        red.time,  pv_red,
+        full.time,
+        pv_full,
+        red.time,
+        pv_red,
         os.path.join(out_dir, "pv_overlay"),
         tau=delay_full,
+        xlim=xlim,
     )
 
     # 5) Time-scales overlay (PVTS / SPTS)
