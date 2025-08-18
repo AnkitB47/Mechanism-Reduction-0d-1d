@@ -82,6 +82,61 @@ def run_constant_pressure(
     return BatchResult(times, temps, Ys, ignition_delay=delay)
 
 
+def run_isothermal_const_p(
+    gas: ct.Solution,
+    T0: float,
+    P0: float,
+    X_or_Y0: dict,
+    tf: float,
+    nsteps: int = 1000,
+    use_mole: bool = True,
+    log_times: bool = False,
+) -> BatchResult:
+    """Integrate an isothermal constant-pressure reactor.
+
+    The reactor is advanced with ``energy="off"`` such that the temperature
+    remains fixed at ``T0``.  The initial state at ``t=0`` is always recorded
+    (addressing previous missing-initial-condition issues).  Sampling may be
+    done on an equal or logarithmic grid according to ``log_times``.
+    """
+
+    if use_mole:
+        gas.TPX = T0, P0, X_or_Y0
+    else:
+        gas.TPY = T0, P0, X_or_Y0
+
+    r = ct.IdealGasConstPressureReactor(gas, energy="off")
+    net = ct.ReactorNet([r])
+    net.atol, net.rtol = 1e-18, 1e-8
+
+    times = [0.0]
+    temps = [r.T]
+    Ys = [r.thermo.Y.copy()]
+
+    if log_times:
+        ts = np.geomspace(1e-12, tf, nsteps)
+        ts = np.insert(ts, 0, 0.0)
+    else:
+        ts = np.linspace(0.0, tf, nsteps + 1)
+
+    for t in ts[1:]:
+        net.advance(t)
+        times.append(t)
+        temps.append(r.T)
+        Ys.append(r.thermo.Y.copy())
+
+    times = np.array(times)
+    temps = np.array(temps)
+    Ys = np.vstack(Ys)
+
+    # inert-run guard (temperature is constant)
+    dY = float(np.max(np.abs(Ys[-1] - Ys[0])))
+    if dY < 1e-5:
+        raise RuntimeError(f"no_reaction: max|ΔY|={dY:.3g}")
+
+    return BatchResult(times, temps, Ys, ignition_delay=None)
+
+
 def run_constant_volume(
     gas: ct.Solution,
     T0: float,

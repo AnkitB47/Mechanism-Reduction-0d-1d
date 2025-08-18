@@ -8,8 +8,8 @@ import cantera as ct
 from typing import Sequence, Dict, Tuple, List
 
 from mechanism.loader import Mechanism
-from mechanism.mix import methane_air_mole_fractions, mole_to_mass_fractions
-from reactor.batch import BatchResult, run_constant_pressure
+from mechanism.mix import methane_air_mole_fractions, mole_to_mass_fractions, HR_PRESETS
+from reactor.batch import BatchResult, run_constant_pressure, run_isothermal_const_p
 from metaheuristics.ga import run_ga, GAOptions
 from progress_variable import PV_SPECIES_DEFAULT, pv_error_aligned
 from metrics import ignition_delay
@@ -18,11 +18,12 @@ from gnn.models import train_gnn, predict_scores
 from visualizations import (
     plot_ignition_delays,
     plot_convergence,
-    plot_pv_errors,
     plot_species_profiles,
     plot_species_residuals,
     plot_progress_variable,
+    plot_timescales,
 )
+from timescales import pv_timescale, spts
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +53,16 @@ def _pv_weights_for(mech: Mechanism) -> np.ndarray:
 
 
 def _baseline_short_run(
-    mech: Mechanism, T0: float, p0: float, Y0: Dict[str, float], tf_short: float, steps_short: int, log_times: bool
+    mech: Mechanism,
+    T0: float,
+    p0: float,
+    Y0: Dict[str, float],
+    tf_short: float,
+    steps_short: int,
+    log_times: bool,
+    runner,
 ) -> BatchResult:
-    return run_constant_pressure(
-        mech.solution, T0, p0, Y0, tf_short, nsteps=steps_short, use_mole=False, log_times=log_times
-    )
+    return runner(mech.solution, T0, p0, Y0, tf_short, nsteps=steps_short, use_mole=False, log_times=log_times)
 
 
 def _loo_scores(
@@ -69,6 +75,7 @@ def _loo_scores(
     steps_short: int,
     log_times: bool,
     critical: Sequence[str],
+    runner,
 ) -> Dict[str, float]:
     """
     Leave-one-out scores: remove each species (except critical), rerun short simulation,
@@ -95,7 +102,7 @@ def _loo_scores(
         try:
             m = Mechanism(base_mech.file_path)
             m.remove_species([s])
-            red = _baseline_short_run(m, T0, p0, Y0, tf_short, steps_short, log_times)
+            red = _baseline_short_run(m, T0, p0, Y0, tf_short, steps_short, log_times, runner)
             score = pv_err_against_baseline(red, m)
             if not np.isfinite(score):
                 score = 0.0
@@ -133,6 +140,7 @@ def _build_species_labels(
     alpha: float,
     critical: Sequence[str],
     cache_labels: bool,
+    runner,
     cache_dir: str = "results",
 ) -> Dict[str, float]:
     """
@@ -147,7 +155,9 @@ def _build_species_labels(
         return {k: float(v) for k, v in labels.items()}
 
     # Compute fresh
-    loo = _loo_scores(mech, full_short, T0, p0, Y0, tf_short, steps_short, log_times, critical)
+    loo = _loo_scores(
+        mech, full_short, T0, p0, Y0, tf_short, steps_short, log_times, critical, runner
+    )
     cen = _centrality_scores(G, mech)
 
     labels: Dict[str, float] = {}
@@ -180,43 +190,50 @@ def evaluate_selection(
     p0,
     steps,
     log_times,
+    runner,
+    tau_pv_full,
+    tau_spts_full,
 ):
     size_frac = float(selection.sum()) / len(selection)
     reason = ""
 
-    # hard guard
+    # hard guard for missing critical species
     if critical_idxs and (selection.sum() < max(4, len(critical_idxs)) or np.any(selection[critical_idxs] == 0)):
-        return 1.0, 1.0, 0.0, "missing_critical", int(selection.sum()), 0.0, 0.0, 0.0, -1e6
+        info = (1.0, 1.0, 0.0, 0.0, "missing_critical", int(selection.sum()), 0.0, 0.0, 0.0)
+        return -1e6, *info
 
-    keep = [base_mech.species_names[i] for i, bit in enumerate(selection) if bit]
-    logger.info("keep_count=%d first10=%s", len(keep), keep[:10])
-    mech = Mechanism(base_mech.file_path)
-    remove = [s for s in mech.species_names if s not in keep]
+    sel = selection.copy()
+    attempt = 0
+    while True:
+        keep = [base_mech.species_names[i] for i, bit in enumerate(sel) if bit]
+        mech = Mechanism(base_mech.file_path)
+        remove = [s for s in mech.species_names if s not in keep]
 
-    try:
-        if remove:
-            mech.remove_species(remove)
-        logger.info(
-            "reduced_mech: %d species, %d reactions",
-            len(mech.species_names),
-            len(mech.reactions()),
-        )
-        res = run_constant_pressure(
-            mech.solution,
-            T0,
-            p0,
-            Y0,
-            tf,
-            nsteps=steps,
-            use_mole=False,
-            log_times=log_times,
-        )
-    except RuntimeError as e:
-        if "no_reaction" in str(e):
-            return 1.0, 1.0, 0.0, str(e), int(selection.sum()), 0.0, 0.0, 0.0, -1e6
-        return 1.0, 1.0, 0.0, f"sim_failed:{type(e).__name__}", int(selection.sum()), 0.0, 0.0, 0.0, -1e6
-    except Exception as e:
-        return 1.0, 1.0, 0.0, f"sim_failed:{type(e).__name__}", int(selection.sum()), 0.0, 0.0, 0.0, -1e6
+        try:
+            if remove:
+                mech.remove_species(remove)
+            res = runner(
+                mech.solution,
+                T0,
+                p0,
+                Y0,
+                tf,
+                nsteps=steps,
+                use_mole=False,
+                log_times=log_times,
+            )
+        except RuntimeError as e:
+            if "no_reaction" in str(e) and attempt == 0:
+                sel = sel.copy()
+                sel[critical_idxs] = 1
+                attempt += 1
+                continue
+            info = (1.0, 1.0, 0.0, 0.0, str(e), int(sel.sum()), 0.0, 0.0, 0.0)
+            return -1e6, *info
+        except Exception as e:
+            info = (1.0, 1.0, 0.0, 0.0, f"sim_failed:{type(e).__name__}", int(sel.sum()), 0.0, 0.0, 0.0)
+            return -1e6, *info
+        break
 
     err = pv_error_aligned(
         full_res.mass_fractions,
@@ -231,32 +248,43 @@ def evaluate_selection(
     delta_T = float(res.temperature[-1] - res.temperature[0])
     delta_Y = float(np.max(np.abs(res.mass_fractions[-1] - res.mass_fractions[0])))
 
-    # penalty if > 40% species removed too aggressively
-    size_pen = 2.0 * max(0.0, size_frac - 0.4)
-    fitness = -err - 10.0 * delay_diff - size_pen
+    # timescale mismatch
+    _, tau_pv_red = pv_timescale(res.time, res.mass_fractions, mech.species_names)
+    tau_spts_red = spts(res.time, res.mass_fractions)
+    log_full_pv = np.log10(tau_pv_full + 1e-30)
+    log_red_pv = np.log10(tau_pv_red + 1e-30)
+    log_full_spts = np.log10(tau_spts_full + 1e-30)
+    log_red_spts = np.log10(tau_spts_red + 1e-30)
+    tau_mis = np.linalg.norm(log_full_pv - log_red_pv) + np.linalg.norm(log_full_spts - log_red_spts)
 
+    # penalty if >40% species removed
+    size_pen = 2.0 * max(0.0, size_frac - 0.4)
+
+    alpha_f, beta_f, gamma_f, delta_f = 1.0, 10.0, 1.0, 1.0
+    fitness = -(alpha_f * err + beta_f * delay_diff + gamma_f * size_pen + delta_f * tau_mis)
+
+    info = (
+        float(err),
+        float(delay_diff),
+        float(size_pen),
+        float(tau_mis),
+        reason,
+        int(sel.sum()),
+        float(delta_T),
+        float(delta_Y),
+        float(delay_red),
+    )
     logger.info(
-        "ΔT=%.3e ΔY=%.3e delay=%.3e pv_err=%.3e fitness=%.3e",
+        "ΔT=%.3e ΔY=%.3e delay=%.3e pv_err=%.3e τ_mis=%.3e fitness=%.3e",
         delta_T,
         delta_Y,
         delay_red,
         err,
+        tau_mis,
         fitness,
     )
 
-    # RETURN ORDER expected by GA debug writer:
-    # (pv_err, delay_diff, size_penalty, reason, keep_count, delta_T, delta_Y, delay_red, fitness)
-    return (
-        float(err),
-        float(delay_diff),
-        float(size_pen),
-        reason,
-        int(selection.sum()),
-        float(delta_T),
-        float(delta_Y),
-        float(delay_red),
-        float(fitness),
-    )
+    return float(fitness), *info
 
 
 # -------------------------------
@@ -275,11 +303,14 @@ def run_ga_reduction(
     tf_short: float,
     steps_short: int,
     cache_labels: bool,
+    isothermal: bool,
 ):
     mech = Mechanism(mech_path)
 
+    runner = run_isothermal_const_p if isothermal else run_constant_pressure
+
     # Reference run (full window)
-    full = run_constant_pressure(
+    full = runner(
         mech.solution,
         T0,
         p0,
@@ -302,19 +333,51 @@ def run_ga_reduction(
 
     genome_len = len(mech.species_names)
 
+    pv_full, tau_pv_full = pv_timescale(full.time, full.mass_fractions, mech.species_names)
+    tau_spts_full = spts(full.time, full.mass_fractions)
+
     # PV weights for alignment
     weights = _pv_weights_for(mech)
     logger.info("Species weights (first 5): %s", list(zip(mech.species_names, weights))[:5])
 
     # --- Short-window baseline for LOO
-    full_short = _baseline_short_run(mech, T0, p0, Y0, tf_short, steps_short, log_times)
+    full_short = _baseline_short_run(mech, T0, p0, Y0, tf_short, steps_short, log_times, runner)
 
     # Graph + labels
     G = build_species_graph(mech.solution)
-    critical = [s for s in ["CH4", "O2", "N2"] if s in mech.species_names]
+    critical = [
+        s
+        for s in [
+            "CH4",
+            "O2",
+            "N2",
+            "O",
+            "H",
+            "OH",
+            "HO2",
+            "H2O2",
+            "CO",
+            "CO2",
+            "H2",
+            "H2O",
+        ]
+        if s in mech.species_names
+    ]
 
     labels = _build_species_labels(
-        mech, G, full_short, T0, p0, Y0, tf_short, steps_short, log_times, alpha, critical, cache_labels
+        mech,
+        G,
+        full_short,
+        T0,
+        p0,
+        Y0,
+        tf_short,
+        steps_short,
+        log_times,
+        alpha,
+        critical,
+        cache_labels,
+        runner,
     )
 
     # GNN training (labels are already normalized 0..1)
@@ -370,7 +433,20 @@ def run_ga_reduction(
         init_pop[i] = individual
 
     eval_fn = lambda sel: evaluate_selection(
-        sel, mech, Y0, tf, full, weights, critical_idxs, T0, p0, steps, log_times
+        sel,
+        mech,
+        Y0,
+        tf,
+        full,
+        weights,
+        critical_idxs,
+        T0,
+        p0,
+        steps,
+        log_times,
+        runner,
+        tau_pv_full,
+        tau_spts_full,
     )
 
     min_species = len(critical_idxs) + 5
@@ -397,10 +473,16 @@ def run_ga_reduction(
     for g, gen in enumerate(debug):
         # fitness is at -2 index (last before genome)
         best_g = max(gen, key=lambda x: x[-2])
-        pv_err, delay_diff, size_pen, reason, keep_cnt, dT, dY, delay_red, fit, genome = best_g
+        pv_err, delay_diff, size_pen, tau_mis, reason, keep_cnt, dT, dY, delay_red, fit, genome = best_g
         logger.info(
-            "gen %02d keep=%d ΔT=%.3e delay=%.3e pv_err=%.3e fitness=%.3e",
-            g, keep_cnt, dT, delay_red, pv_err, fit,
+            "gen %02d keep=%d ΔT=%.3e delay=%.3e pv_err=%.3e τ_mis=%.3e fitness=%.3e",
+            g,
+            keep_cnt,
+            dT,
+            delay_red,
+            pv_err,
+            tau_mis,
+            fit,
         )
         with open(os.path.join("results", f"best_selection_gen{g:02d}.txt"), "w") as f:
             f.write(",".join(map(str, genome.tolist())))
@@ -429,6 +511,7 @@ def full_pipeline(
     tf_short: float | None = None,
     steps_short: int | None = None,
     cache_labels: bool = True,
+    isothermal: bool = False,
 ):
     mech = Mechanism(mech_path)
 
@@ -437,11 +520,13 @@ def full_pipeline(
         phi = phi or 1.0
         x0 = methane_air_mole_fractions(phi)
         Y0 = mole_to_mass_fractions(mech.solution, x0)
+        T0 = T0 or 1500.0
+        p0 = p0 or ct.one_atm
+    elif preset in HR_PRESETS:
+        T0, p0, Y0 = HR_PRESETS[preset](mech.solution)
     else:
         raise NotImplementedError(preset)
 
-    T0 = T0 or 1500.0
-    p0 = p0 or ct.one_atm
     tf = min(tf, 1.0)
 
     # Defaults for short LOO runs
@@ -450,8 +535,22 @@ def full_pipeline(
     if steps_short is None:
         steps_short = max(50, int(0.25 * steps))
 
+    use_iso = isothermal and preset in HR_PRESETS
+    runner = run_isothermal_const_p if use_iso else run_constant_pressure
+
     names, sols, hists, debug, full, weights = run_ga_reduction(
-        mech_path, Y0, tf, steps, T0, p0, log_times, alpha, tf_short, steps_short, cache_labels
+        mech_path,
+        Y0,
+        tf,
+        steps,
+        T0,
+        p0,
+        log_times,
+        alpha,
+        tf_short,
+        steps_short,
+        cache_labels,
+        use_iso,
     )
 
     os.makedirs(out_dir, exist_ok=True)
@@ -472,6 +571,7 @@ def full_pipeline(
             "pv_error",
             "delay_diff",
             "size_penalty",
+            "tau_mismatch",
             "reason",
             "keep_count",
             "delta_T",
@@ -481,8 +581,8 @@ def full_pipeline(
         ])
         for g, gen in enumerate(debug):
             for i, d in enumerate(gen):
-                pv_err, delay_diff, size_pen, reason, keep_cnt, dT, dY, delay_red, fit, genome = d
-                writer.writerow([g, i, pv_err, delay_diff, size_pen, reason, keep_cnt, dT, dY, delay_red, fit])
+                pv_err, delay_diff, size_pen, tau_mis, reason, keep_cnt, dT, dY, delay_red, fit, genome = d
+                writer.writerow([g, i, pv_err, delay_diff, size_pen, tau_mis, reason, keep_cnt, dT, dY, delay_red, fit])
 
     # Build reduced mechanism from best selection
     best_sel = sols[0]
@@ -495,7 +595,7 @@ def full_pipeline(
         for s in keep:
             f.write(s + "\n")
 
-    red = run_constant_pressure(
+    red = runner(
         red_mech.solution,
         T0,
         p0,
@@ -552,7 +652,6 @@ def full_pipeline(
         red_mech.species_names,
         weights,
     )
-    plot_pv_errors([pv_err], ["GA"], os.path.join(out_dir, "pv_error"))
     with open(os.path.join(out_dir, "pv_error.csv"), "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["pv_error"])
@@ -572,6 +671,34 @@ def full_pipeline(
         pv_red,
         os.path.join(out_dir, "pv_overlay"),
     )
+
+    # Timescales overlay
+    _, tau_pv_full = pv_timescale(full.time, full.mass_fractions, mech.species_names)
+    _, tau_pv_red = pv_timescale(red.time, red.mass_fractions, red_mech.species_names)
+    tau_spts_full = spts(full.time, full.mass_fractions)
+    tau_spts_red = spts(red.time, red.mass_fractions)
+    plot_timescales(
+        full.time,
+        tau_pv_full,
+        tau_spts_full,
+        red.time,
+        tau_pv_red,
+        tau_spts_red,
+        os.path.join(out_dir, "timescales"),
+    )
+    with open(os.path.join(out_dir, "timescales.csv"), "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "time",
+            "tau_pv_full",
+            "tau_pv_red",
+            "tau_spts_full",
+            "tau_spts_red",
+        ])
+        for t, tpvf, tpvr, tsf, tsr in zip(
+            full.time, tau_pv_full, tau_pv_red, tau_spts_full, tau_spts_red
+        ):
+            writer.writerow([t, tpvf, tpvr, tsf, tsr])
 
     print(
         f"\nSummary:\n{'Mechanism':>10} {'Species':>8} {'Reactions':>10} {'Delay[s]':>12} {'PV err':>8}"
