@@ -2,7 +2,7 @@ from __future__ import annotations
 """Plotting utilities for mechanism reduction results (paper-ready)."""
 
 import os
-from typing import Iterable, Sequence, Tuple, Optional
+from typing import Iterable, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -102,10 +102,11 @@ def plot_species_profiles(
     species: Sequence[str],
     out_base: str,
     *,
-    tau_full: Optional[float] = None,
-    zoom_decades_left: float = 2.0,
-    zoom_decades_right: float = 1.0,
-    ylim: Optional[Tuple[float, float]] = None,
+    tau_full: float | None = None,
+    tau_red: float | None = None,
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
+    markevery: int = 20,
 ) -> None:
     """
     Paper-style overlay of species profiles.
@@ -127,30 +128,29 @@ def plot_species_profiles(
 
     fig, ax = plt.subplots()
 
-    # vertical guideline at ignition delay
     if tau_full is not None and np.isfinite(tau_full) and tau_full > 0:
-        ax.axvline(tau_full, color="0.4", ls="--", lw=1, alpha=0.8, zorder=0)
+        ax.axvline(tau_full, color="0.2", ls="--", lw=1, zorder=0)
+    if tau_red is not None and np.isfinite(tau_red) and tau_red > 0:
+        ax.axvline(tau_red, color="0.6", ls="--", lw=1, zorder=0)
 
-    # draw series
-    n_full = len(time_full)
-    mk_every = _downsample_markevery(len(time_red))
+    mk_every = markevery
     for i, s in enumerate(common):
         color = _style_color(s, fallback=f"C{i}")
-        # full = line
-        ax.semilogx(time_full, Y_full[:, idxF[i]],
-                    linewidth=2.2, color=color, label=f"{s} full")
-        # reduced = hollow dot markers
-        ax.semilogx(time_red, Y_red[:, idxR[i]],
-                    linestyle="none", marker="o", markersize=4.0,
-                    fillstyle="none", color=color, markevery=mk_every,
-                    label=f"{s} reduced")
+        ax.semilogx(time_full, Y_full[:, idxF[i]], linewidth=2.2, color=color, label=f"{s} full")
+        ax.semilogx(
+            time_red,
+            Y_red[:, idxR[i]],
+            linestyle="none",
+            marker="o",
+            markersize=4.0,
+            fillstyle="none",
+            color=color,
+            markevery=mk_every,
+            label=f"{s} reduced",
+        )
 
-    # zoom window in time
-    if tau_full is not None and np.isfinite(tau_full) and tau_full > 0:
-        t_min = max(np.min(time_full), tau_full / (10.0 ** zoom_decades_left))
-        t_max = min(np.max(time_full), tau_full * (10.0 ** zoom_decades_right))
-        if t_min < t_max:
-            ax.set_xlim(t_min, t_max)
+    if xlim is not None:
+        ax.set_xlim(*xlim)
 
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Mass fraction")
@@ -158,7 +158,6 @@ def plot_species_profiles(
     if ylim is not None:
         ax.set_ylim(*ylim)
 
-    # compact legend
     ax.legend(ncol=2, frameon=False)
     _save(fig, out_base)
 
@@ -172,6 +171,7 @@ def plot_species_residuals(
     names_red: Sequence[str],
     species: Sequence[str],
     out_base: str,
+    xlim: tuple[float, float] | None = None,
 ) -> None:
     """Plot residuals ``Y_full(t) - Y_red(t)`` on full time grid (reduced is interpolated)."""
     common = [s for s in species if s in names_full and s in names_red]
@@ -191,13 +191,14 @@ def plot_species_residuals(
     fig, ax = plt.subplots()
     for j, s in enumerate(common):
         color = _style_color(s, fallback=f"C{j}")
-        ax.semilogx(time_full, Y_full[:, names_full.index(s)] - Y_red_interp[:, j],
-                    label=s, color=color)
+        ax.semilogx(time_full, Y_full[:, names_full.index(s)] - Y_red_interp[:, j], label=s, color=color)
 
     ax.axhline(0.0, color="0.4", lw=0.8, ls=":")
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("ΔY (full - red)")
     ax.grid(True, which="both", alpha=0.3)
+    if xlim is not None:
+        ax.set_xlim(*xlim)
     ax.legend(frameon=False, ncol=2)
     _save(fig, out_base)
 
@@ -209,7 +210,8 @@ def plot_progress_variable(
     pv_red: np.ndarray,
     out_base: str,
     *,
-    tau: Optional[float] = None,
+    tau: float | None = None,
+    xlim: tuple[float, float] | None = None,
 ) -> None:
     """Overlay progress variables for full vs. reduced mechanisms."""
     fig, ax = plt.subplots()
@@ -219,6 +221,8 @@ def plot_progress_variable(
                 fillstyle="none", markevery=mk_every, label="PV reduced")
     if tau is not None and np.isfinite(tau) and tau > 0:
         ax.axvline(tau, color="0.4", ls="--", lw=1)
+    if xlim is not None:
+        ax.set_xlim(*xlim)
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Progress variable")
     ax.grid(True, which="both", alpha=0.3)
