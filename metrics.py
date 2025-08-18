@@ -16,17 +16,9 @@ def pv_error(full: np.ndarray, red: np.ndarray) -> float:
     return float(np.linalg.norm(full - red) / (np.linalg.norm(full) + 1e-12))
 
 
-def ignition_delay(
-    time: np.ndarray,
-    T: np.ndarray,
-    Y: np.ndarray | None = None,
-    species_idx: int | None = None,
-) -> float:
-    """Estimate ignition delay from temperature or species profiles."""
+def ignition_delay(time: np.ndarray, T: np.ndarray) -> tuple[float, float]:
+    """Return ignition delay and max dT/dt."""
 
-    if species_idx is not None and Y is not None:
-        deriv = np.gradient(Y[:, species_idx], time)
-    else:
-        deriv = np.gradient(T, time)
-    idx = int(np.argmax(deriv))
-    return float(time[idx])
+    dTdt = np.gradient(T, time, edge_order=2)
+    kmax = int(np.argmax(dTdt))
+    return float(time[kmax]), float(dTdt[kmax])

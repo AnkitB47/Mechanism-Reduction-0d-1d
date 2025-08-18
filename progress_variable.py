@@ -8,6 +8,8 @@ from typing import Sequence
 import numpy as np
 from metrics import pv_error
 
+PV_SPECIES_DEFAULT = ["CO2", "H2O", "CO", "H2", "O", "H", "OH"]
+
 
 def progress_variable(Y: np.ndarray, weights: Sequence[float]) -> np.ndarray:
     """Return :math:`PV(t)=\sum_i w_i Y_i(t)`.
@@ -38,35 +40,49 @@ def progress_variable(Y: np.ndarray, weights: Sequence[float]) -> np.ndarray:
 
 
 def pv_error_aligned(
-    Y_full: np.ndarray,
-    Y_red: np.ndarray,
-    names_full: Sequence[str],
-    names_red: Sequence[str],
-    weights_full: Sequence[float],
+    full_Y: np.ndarray,
+    red_Y: np.ndarray,
+    full_names: Sequence[str],
+    red_names: Sequence[str],
+    weights: Sequence[float] | None = None,
 ) -> float:
     """Compute PV error aligning species by name.
 
-    This utility builds a weight vector for the reduced mechanism that matches
-    the ordering in ``Y_red`` while extracting the corresponding mass-fraction
-    columns from ``Y_full``.
-
     Parameters
     ----------
-    Y_full, Y_red:
+    full_Y, red_Y:
         Mass-fraction matrices for the full and reduced simulations.
-    names_full, names_red:
-        Species names corresponding to the columns of ``Y_full`` and
-        ``Y_red`` respectively.
-    weights_full:
-        Progress-variable weights defined for the full mechanism ordering.
+    full_names, red_names:
+        Species names corresponding to the columns of ``full_Y`` and
+        ``red_Y`` respectively.
+    weights:
+        Optional weights for the PV species.
     """
 
-    name_to_idx = {n: i for i, n in enumerate(names_full)}
-    idx_full = [name_to_idx[n] for n in names_red]
-    weights = np.array([weights_full[name_to_idx[n]] for n in names_red])
-    pv_f = progress_variable(Y_full[:, idx_full], weights)
-    pv_r = progress_variable(Y_red, weights)
-    return pv_error(pv_f, pv_r)
+    logger = logging.getLogger(__name__)
+    map_full = {s: i for i, s in enumerate(full_names)}
+    map_red = {s: i for i, s in enumerate(red_names)}
+    use = [s for s in PV_SPECIES_DEFAULT if s in map_full and s in map_red]
+    if not use:
+        return 1e9
+
+    F = full_Y[:, [map_full[s] for s in use]]
+    R = red_Y[:, [map_red[s] for s in use]]
+    if weights is not None:
+        w = np.asarray([weights[map_full[s]] for s in use])
+    else:
+        w = np.ones(len(use))
+
+    logger.info("PV species/weights (first 5): %s", list(zip(use, w))[:5])
+    logger.info(
+        "PV alignment (first 5): %s",
+        [f"{s}->{s}" for s in use[:5]],
+    )
+
+    pvF = (F * w).sum(axis=1)
+    pvR = (R * w).sum(axis=1)
+    err = np.linalg.norm(pvF - pvR) / (np.linalg.norm(pvF) + 1e-16)
+    return float(err)
 
 
 def optimise_weights(

@@ -18,10 +18,6 @@ class Mechanism:
     def reactions(self) -> List[ct.Reaction]:
         return list(self.solution.reactions())
 
-    def remove_species(self, species_list: List[str]):
-        remaining_species = [s for s in self.solution.species() if s.name not in species_list]
-        self.solution = ct.Solution(thermo='IdealGas', kinetics='GasKinetics', species=remaining_species, reactions=self.solution.reactions())
-
     def remove_species(self, remove: list[str]) -> None:
         """Remove species and all reactions involving them."""
         # Get allowed species set
