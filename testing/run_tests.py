@@ -32,10 +32,22 @@ def main():
     parser.add_argument("--min-species", type=int, default=None, help="Minimum species allowed in GA")
     parser.add_argument("--max-species", type=int, default=None, help="Maximum species allowed in GA")
     parser.add_argument("--target-species", type=int, default=None, help="Target species count")
-    parser.add_argument("--size-weight", type=float, default=3.0, help="Penalty weight for size term")
-    parser.add_argument("--species-weight", type=float, default=2.0, help="Penalty weight for species residual")
-    parser.add_argument("--zoom-around-tau", type=float, default=None, help="Decades half-span around τ")
-    parser.add_argument("--ymax", type=float, default=None, help="Optional upper y-limit for species plot")
+    parser.add_argument("--generations", type=int, default=60, help="GA generations")
+    parser.add_argument("--population", type=int, default=40, help="GA population size")
+    parser.add_argument("--mutation", type=float, default=0.25, help="GA mutation rate")
+    parser.add_argument(
+        "--focus",
+        default="auto",
+        choices=["none", "auto", "window"],
+        help="Plot focus window setting",
+    )
+    parser.add_argument(
+        "--focus-window",
+        nargs=2,
+        type=float,
+        default=None,
+        help="Custom focus window tmin tmax when --focus=window",
+    )
 
     args = parser.parse_args()
 
@@ -57,10 +69,11 @@ def main():
         min_species=args.min_species,
         max_species=args.max_species,
         target_species=args.target_species,
-        size_weight=args.size_weight,
-        species_weight=args.species_weight,
-        zoom_around_tau=args.zoom_around_tau,
-        ymax=args.ymax,
+        generations=args.generations,
+        population=args.population,
+        mutation=args.mutation,
+        focus=args.focus,
+        focus_window=tuple(args.focus_window) if args.focus_window else None,
     )
     print(f"\n✅ Pipeline complete. Results written to '{args.out}'\n")
 

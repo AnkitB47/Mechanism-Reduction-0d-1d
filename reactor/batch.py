@@ -25,6 +25,7 @@ def run_constant_pressure(
     detect_ignition: bool = True,
     use_mole: bool = True,
     log_times: bool = False,
+    time_grid: np.ndarray | None = None,
 ) -> BatchResult:
     """Integrate an adiabatic constant-pressure reactor.
 
@@ -49,7 +50,9 @@ def run_constant_pressure(
     Ys = [r.thermo.Y.copy()]
 
     # advance on fixed times (optionally log-spaced)
-    if log_times:
+    if time_grid is not None:
+        ts = np.asarray(time_grid, dtype=float)
+    elif log_times:
         ts = np.geomspace(1e-12, tf, nsteps)
         ts = np.insert(ts, 0, 0.0)
     else:
@@ -91,6 +94,7 @@ def run_isothermal_const_p(
     nsteps: int = 1000,
     use_mole: bool = True,
     log_times: bool = False,
+    time_grid: np.ndarray | None = None,
 ) -> BatchResult:
     """Integrate an isothermal constant-pressure reactor.
 
@@ -113,7 +117,9 @@ def run_isothermal_const_p(
     temps = [r.T]
     Ys = [r.thermo.Y.copy()]
 
-    if log_times:
+    if time_grid is not None:
+        ts = np.asarray(time_grid, dtype=float)
+    elif log_times:
         ts = np.geomspace(1e-12, tf, nsteps)
         ts = np.insert(ts, 0, 0.0)
     else:
