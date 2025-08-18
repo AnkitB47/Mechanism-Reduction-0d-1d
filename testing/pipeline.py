@@ -4,7 +4,6 @@ import csv
 import logging
 import numpy as np
 import cantera as ct
-import matplotlib.pyplot as plt
 
 from typing import List, Sequence
 
@@ -12,15 +11,17 @@ from mechanism.loader import Mechanism
 from mechanism.mix import methane_air_mole_fractions, mole_to_mass_fractions
 from reactor.batch import BatchResult, run_constant_pressure
 from metaheuristics.ga import run_ga, GAOptions
-from progress_variable import pv_error_aligned, progress_variable
+from progress_variable import PV_SPECIES_DEFAULT, pv_error_aligned, progress_variable
 from metrics import ignition_delay
 from graph.construction import build_species_graph
 from gnn.models import train_gnn, predict_scores
 from visualizations import (
-    plot_mole_fraction,
     plot_ignition_delays,
     plot_convergence,
     plot_pv_errors,
+    plot_species_profiles,
+    plot_species_residuals,
+    plot_progress_variable,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,19 +153,46 @@ def run_ga_reduction(mech_path, Y0, tf, steps, T0, p0, log_times):
     # Normalize weights before passing to GNN
     weights_norm = weights / (np.max(weights) + 1e-8)
 
-    gnn_model = train_gnn(G, mech.solution, dict(zip(mech.species_names, weights_norm)), epochs=50)
-    
+    gnn_model = train_gnn(
+        G,
+        mech.solution,
+        dict(zip(mech.species_names, weights_norm)),
+        epochs=200,
+    )
+
     os.makedirs("results", exist_ok=True)
 
     scores = predict_scores(
         model=gnn_model,
         G=G,
         solution=mech.solution,
-        save_path=os.path.join("results", "gnn_scores.csv")
+        save_path=os.path.join("results", "gnn_scores.csv"),
     )
 
     scores_arr = np.array([scores[s] for s in mech.species_names])
-    order = np.argsort(scores_arr)
+    std = float(scores_arr.std())
+    logger.info(
+        "GNN score stats min=%.3f mean=%.3f max=%.3f std=%.3e",
+        float(scores_arr.min()),
+        float(scores_arr.mean()),
+        float(scores_arr.max()),
+        std,
+    )
+
+    if np.allclose(scores_arr, 0.0):
+        logger.error("GNN scores are all zeros; falling back to degree centrality")
+        use_scores = False
+    elif std < 1e-6:
+        logger.warning("GNN scores near-constant (std=%.2e); using degree centrality", std)
+        use_scores = False
+    else:
+        use_scores = True
+
+    if use_scores:
+        order = np.argsort(scores_arr)
+    else:
+        deg = np.array([G.degree(n) for n in mech.species_names], dtype=float)
+        order = np.argsort(deg)
 
     critical = [s for s in ["CH4", "O2", "N2"] if s in mech.species_names]
     critical_idxs = [mech.species_names.index(s) for s in critical]
@@ -307,21 +335,36 @@ def full_pipeline(
     )
 
     # choose informative species (like the paper)
-    key_species = [s for s in ["CH4", "O2", "CO2", "CO", "H2O", "OH"] if s in mech.species_names]
+    key_species = [
+        s for s in ["O2", "CO2", "H2O", "CO", "CH4", "OH"] if s in mech.species_names
+    ]
 
-    # 1) Species profiles (full=solid line, reduced=dots)
-    plot_profiles(
-        full_res=full,
-        red_res=red,
-        full_names=mech.species_names,
-        red_names=red_mech.species_names,
-        species=key_species,
-        out_base=os.path.join(out_dir, "profiles"),
+    # 1) Species profiles (full=solid line, reduced=circle markers)
+    plot_species_profiles(
+        full.time,
+        full.mass_fractions,
+        mech.species_names,
+        red.time,
+        red.mass_fractions,
+        red_mech.species_names,
+        key_species,
+        os.path.join(out_dir, "profiles"),
+    )
+
+    # Residuals
+    plot_species_residuals(
+        full.time,
+        full.mass_fractions,
+        red.mass_fractions,
+        mech.species_names,
+        red_mech.species_names,
+        key_species,
+        os.path.join(out_dir, "profiles_residual"),
     )
 
     # 2) Ignition delay (two bars: full vs reduced)
     delay_full, _ = ignition_delay(full.time, full.temperature)
-    delay_red,  _ = ignition_delay(red.time,  red.temperature)
+    delay_red, _ = ignition_delay(red.time, red.temperature)
     plot_ignition_delays(
         delays=[delay_full, delay_red],
         labels=["Full", "Reduced"],
@@ -331,7 +374,7 @@ def full_pipeline(
     # 3) GA convergence
     plot_convergence(hists, names, os.path.join(out_dir, "convergence"))
 
-    # 4) PV error (aligned)
+    # 4) PV error (aligned) and overlay
     pv_err = pv_error_aligned(
         full.mass_fractions,
         red.mass_fractions,
@@ -340,6 +383,25 @@ def full_pipeline(
         weights,
     )
     plot_pv_errors([pv_err], ["GA"], os.path.join(out_dir, "pv_error"))
+    with open(os.path.join(out_dir, "pv_error.csv"), "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["pv_error"])
+        writer.writerow([pv_err])
+
+    # PV overlay
+    map_full = {s: i for i, s in enumerate(mech.species_names)}
+    map_red = {s: i for i, s in enumerate(red_mech.species_names)}
+    use = [s for s in PV_SPECIES_DEFAULT if s in map_full and s in map_red]
+    w = np.array([weights[map_full[s]] for s in use])
+    pv_full = (full.mass_fractions[:, [map_full[s] for s in use]] * w).sum(axis=1)
+    pv_red = (red.mass_fractions[:, [map_red[s] for s in use]] * w).sum(axis=1)
+    plot_progress_variable(
+        full.time,
+        pv_full,
+        red.time,
+        pv_red,
+        os.path.join(out_dir, "pv_overlay"),
+    )
 
     print(
         f"\nSummary:\n{'Mechanism':>10} {'Species':>8} {'Reactions':>10} {'Delay[s]':>12} {'PV err':>8}"
@@ -351,55 +413,11 @@ def full_pipeline(
         f"{'Reduced':>10} {len(red_mech.species_names):8d} {len(red_mech.reactions()):10d} {delay_red:12.3e} {pv_err:8.3f}"
     )
 
-
-def plot_profiles(
-    full_res: BatchResult,
-    red_res: BatchResult,
-    full_names: Sequence[str],
-    red_names: Sequence[str],
-    species: Sequence[str],
-    out_base: str,
-) -> None:
-    # intersection & indices (align by name)
-    common = [s for s in species if s in full_names and s in red_names]
-    if not common:
-        fig, ax = plt.subplots()
-        ax.text(0.5, 0.5, "No common species to plot", ha="center")
-        fig.savefig(out_base + ".png", dpi=300, bbox_inches="tight")
-        fig.savefig(out_base + ".pdf", bbox_inches="tight")
-        plt.close(fig)
-        return
-
-    idxF = [full_names.index(s) for s in common]
-    idxR = [red_names.index(s)  for s in common]
-
-    fig, ax = plt.subplots()
-    for i, s in enumerate(common):
-        # full: solid line
-        line, = ax.semilogx(
-            full_res.time,
-            full_res.mass_fractions[:, idxF[i]],
-            label=f"{s} full",
-            linewidth=2,
+    if pv_err < 0.05:
+        print(
+            "Summary:\n"
+            f"  Species: {len(mech.species_names)} -> {len(red_mech.species_names)}\n"
+            f"  Reactions: {len(mech.reactions())} -> {len(red_mech.reactions())}\n"
+            f"  Delay_full/red: {delay_full:.3e} / {delay_red:.3e} s\n"
+            f"  PV_error: {pv_err*100:.1f}%"
         )
-        # reduced: markers only, same color
-        ax.semilogx(
-            red_res.time,
-            red_res.mass_fractions[:, idxR[i]],
-            linestyle="none",
-            marker="o",
-            markersize=3.0,
-            markerfacecolor="none",
-            markeredgewidth=1.2,
-            color=line.get_color(),
-            label=f"{s} reduced",
-        )
-
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Mass fraction")
-    ax.grid(True, which="both", alpha=0.3)
-    ax.legend(ncol=2, frameon=False)
-    fig.tight_layout()
-    fig.savefig(out_base + ".png", dpi=300, bbox_inches="tight")
-    fig.savefig(out_base + ".pdf", bbox_inches="tight")
-    plt.close(fig)

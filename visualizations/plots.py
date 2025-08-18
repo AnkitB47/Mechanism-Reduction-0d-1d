@@ -2,7 +2,7 @@ from __future__ import annotations
 """Plotting utilities for mechanism reduction results."""
 
 import os
-from typing import Sequence, Iterable
+from typing import Iterable, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -68,4 +68,121 @@ def plot_pv_errors(errors: Sequence[float], labels: Sequence[str], out_base: str
     ax.bar(labels, errors)
     ax.set_ylabel("PV error")
     ax.grid(axis="y", alpha=0.3)
+    _save(fig, out_base)
+
+
+def plot_species_profiles(
+    time_full: np.ndarray,
+    Y_full: np.ndarray,
+    names_full: Sequence[str],
+    time_red: np.ndarray,
+    Y_red: np.ndarray,
+    names_red: Sequence[str],
+    species: Sequence[str],
+    out_base: str,
+) -> None:
+    """Overlay species profiles for full vs. reduced mechanisms.
+
+    Full profiles are drawn as solid lines, while reduced-problem profiles are
+    plotted using unfilled circle markers. The time axis uses a logarithmic
+    scale for clarity.
+    """
+
+    common = [s for s in species if s in names_full and s in names_red]
+    if not common:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "No common species to plot", ha="center")
+        _save(fig, out_base)
+        return
+
+    idxF = [names_full.index(s) for s in common]
+    idxR = [names_red.index(s) for s in common]
+
+    fig, ax = plt.subplots()
+    for i, s in enumerate(common):
+        line, = ax.semilogx(
+            time_full,
+            Y_full[:, idxF[i]],
+            linewidth=2,
+            label=f"{s} full",
+        )
+        ax.semilogx(
+            time_red,
+            Y_red[:, idxR[i]],
+            linestyle="none",
+            marker="o",
+            markersize=4,
+            fillstyle="none",
+            color=line.get_color(),
+            markevery=20,
+            label=f"{s} reduced",
+        )
+
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Mass fraction")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(ncol=2, frameon=False)
+    _save(fig, out_base)
+
+
+def plot_species_residuals(
+    time: np.ndarray,
+    Y_full: np.ndarray,
+    Y_red: np.ndarray,
+    names_full: Sequence[str],
+    names_red: Sequence[str],
+    species: Sequence[str],
+    out_base: str,
+) -> None:
+    """Plot residuals ``Y_red - Y_full`` for selected species."""
+
+    common = [s for s in species if s in names_full and s in names_red]
+    if not common:
+        fig, ax = plt.subplots()
+        ax.text(0.5, 0.5, "No common species", ha="center")
+        _save(fig, out_base)
+        return
+
+    idxF = [names_full.index(s) for s in common]
+    idxR = [names_red.index(s) for s in common]
+
+    fig, ax = plt.subplots()
+    for i, s in enumerate(common):
+        ax.semilogx(
+            time,
+            Y_red[:, idxR[i]] - Y_full[:, idxF[i]],
+            label=s,
+        )
+
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("ΔY (red - full)")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(frameon=False)
+    _save(fig, out_base)
+
+
+def plot_progress_variable(
+    time_full: np.ndarray,
+    pv_full: np.ndarray,
+    time_red: np.ndarray,
+    pv_red: np.ndarray,
+    out_base: str,
+) -> None:
+    """Overlay progress variables for full vs. reduced mechanisms."""
+
+    fig, ax = plt.subplots()
+    ax.semilogx(time_full, pv_full, label="PV full", linewidth=2)
+    ax.semilogx(
+        time_red,
+        pv_red,
+        linestyle="none",
+        marker="o",
+        fillstyle="none",
+        markevery=20,
+        label="PV reduced",
+    )
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Progress variable")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(frameon=False)
     _save(fig, out_base)
