@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--T0", type=float, default=1500.0, help="Initial temperature [K]")
     parser.add_argument("--p0", type=float, default=float(ct.one_atm), help="Initial pressure [Pa]")
     parser.add_argument("--log-times", action="store_true", help="Use log-spaced time sampling")
+    parser.add_argument("--isothermal", action="store_true", help="Use isothermal reactor for HR presets")
 
     # === NEW ARGUMENTS for label building ===
     parser.add_argument("--alpha", type=float, default=0.8, help="Weight between LOO and flux importance")
@@ -41,6 +42,7 @@ def main():
         T0=args.T0,
         p0=args.p0,
         log_times=args.log_times,
+        isothermal=args.isothermal,
         alpha=args.alpha,
         tf_short=args.tf_short,
         steps_short=args.steps_short,

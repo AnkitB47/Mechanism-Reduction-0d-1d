@@ -62,15 +62,6 @@ def plot_convergence(histories: Sequence[Iterable[float]], labels: Sequence[str]
     _save(fig, out_base)
 
 
-def plot_pv_errors(errors: Sequence[float], labels: Sequence[str], out_base: str) -> None:
-    """Bar chart of progress variable errors."""
-    fig, ax = plt.subplots()
-    ax.bar(labels, errors)
-    ax.set_ylabel("PV error")
-    ax.grid(axis="y", alpha=0.3)
-    _save(fig, out_base)
-
-
 def plot_species_profiles(
     time_full: np.ndarray,
     Y_full: np.ndarray,
@@ -134,7 +125,7 @@ def plot_species_residuals(
     species: Sequence[str],
     out_base: str,
 ) -> None:
-    """Plot residuals ``Y_red - Y_full`` for selected species."""
+    """Plot residuals ``Y_full - Y_red`` for selected species."""
 
     common = [s for s in species if s in names_full and s in names_red]
     if not common:
@@ -148,14 +139,10 @@ def plot_species_residuals(
 
     fig, ax = plt.subplots()
     for i, s in enumerate(common):
-        ax.semilogx(
-            time,
-            Y_red[:, idxR[i]] - Y_full[:, idxF[i]],
-            label=s,
-        )
+        ax.semilogx(time, Y_full[:, idxF[i]] - Y_red[:, idxR[i]], label=s)
 
     ax.set_xlabel("Time [s]")
-    ax.set_ylabel("ΔY (red - full)")
+    ax.set_ylabel("ΔY (full - red)")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(frameon=False)
     _save(fig, out_base)
@@ -183,6 +170,45 @@ def plot_progress_variable(
     )
     ax.set_xlabel("Time [s]")
     ax.set_ylabel("Progress variable")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(frameon=False)
+    _save(fig, out_base)
+
+
+def plot_timescales(
+    time_full: np.ndarray,
+    tau_pv_full: np.ndarray,
+    tau_spts_full: np.ndarray,
+    time_red: np.ndarray,
+    tau_pv_red: np.ndarray,
+    tau_spts_red: np.ndarray,
+    out_base: str,
+) -> None:
+    """Overlay PVTS and SPTS time scales for full and reduced cases."""
+
+    fig, ax = plt.subplots()
+    ax.semilogx(time_full, tau_pv_full, label="PVTS full", linewidth=2)
+    ax.semilogx(
+        time_red,
+        tau_pv_red,
+        linestyle="--",
+        marker="o",
+        markevery=20,
+        fillstyle="none",
+        label="PVTS reduced",
+    )
+    ax.semilogx(time_full, tau_spts_full, label="SPTS full", linewidth=2)
+    ax.semilogx(
+        time_red,
+        tau_spts_red,
+        linestyle="--",
+        marker="s",
+        markevery=20,
+        fillstyle="none",
+        label="SPTS reduced",
+    )
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Time scale [s]")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(frameon=False)
     _save(fig, out_base)
