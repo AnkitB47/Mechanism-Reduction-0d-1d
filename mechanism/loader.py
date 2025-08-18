@@ -39,6 +39,7 @@ class Mechanism:
             species=remaining_species,
             reactions=valid_reactions
         )
+        assert set(self.species_names) == allowed_names
 
     def save(self, out_path: str):
         """Save the current reduced mechanism to a YAML file."""

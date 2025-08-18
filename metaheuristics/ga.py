@@ -10,6 +10,8 @@ class GAOptions:
     mutation_rate: float = 0.1
     # minimum number of active ("1") genes allowed in an individual
     min_species: int = 1
+    # optional upper bound on active genes
+    max_species: int | None = None
 
 
 def initialize_population(
@@ -81,16 +83,33 @@ def mutate(population: np.ndarray, rate: float, mask: np.ndarray | None = None) 
     return population
 
 
-def _enforce_min(pop: np.ndarray, min_size: int) -> None:
-    if min_size <= 0:
-        return
-    for ind in pop:
-        ones = int(ind.sum())
-        if ones < min_size:
-            zeros = np.where(ind == 0)[0]
-            if zeros.size:
-                idx = np.random.choice(zeros, min_size - ones, replace=False)
-                ind[idx] = 1
+def _enforce_bounds(
+    pop: np.ndarray,
+    min_size: int,
+    max_size: int | None,
+    fixed: Sequence[int] | None,
+) -> None:
+    if min_size > 0:
+        for ind in pop:
+            ones = int(ind.sum())
+            if ones < min_size:
+                zeros = np.where(ind == 0)[0]
+                if zeros.size:
+                    idx = np.random.choice(zeros, min_size - ones, replace=False)
+                    ind[idx] = 1
+    if max_size is not None and max_size > 0:
+        for ind in pop:
+            ones_idx = np.where(ind == 1)[0]
+            extra = len(ones_idx) - max_size
+            if extra > 0:
+                removable = (
+                    [i for i in ones_idx if fixed is None or i not in fixed]
+                )
+                if removable:
+                    to_flip = np.random.choice(removable, extra, replace=False)
+                    ind[to_flip] = 0
+            if fixed is not None:
+                ind[list(fixed)] = 1
 
 
 def run_ga(
@@ -132,7 +151,7 @@ def run_ga(
         pop &= mask
     if fixed_indices is not None:
         pop[:, list(fixed_indices)] = 1
-    _enforce_min(pop, options.min_species)
+    _enforce_bounds(pop, options.min_species, options.max_species, fixed_indices)
     best = pop[0]
     best_score = -np.inf
     history: List[float] = []
@@ -146,15 +165,7 @@ def run_ga(
         if return_debug:
             debug.append(
                 [
-                    (
-                        details[i][0] if len(details[i]) > 0 else None,
-                        details[i][1] if len(details[i]) > 1 else None,
-                        details[i][2] if len(details[i]) > 2 else None,
-                        scores[i],
-                        details[i][3] if len(details[i]) > 3 else "",
-                        pop[i].copy(),
-                    )
-                    for i in range(len(pop))
+                    (*details[i], scores[i], pop[i].copy()) for i in range(len(pop))
                 ]
             )
         pop = selection(pop, scores)
@@ -162,7 +173,7 @@ def run_ga(
         pop = mutate(pop, options.mutation_rate, mask)
         if fixed_indices is not None:
             pop[:, list(fixed_indices)] = 1
-        _enforce_min(pop, options.min_species)
+        _enforce_bounds(pop, options.min_species, options.max_species, fixed_indices)
     if return_history and return_debug:
         return best, history, debug
     if return_history:
