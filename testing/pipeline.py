@@ -76,40 +76,58 @@ def _loo_scores(
     log_times: bool,
     critical: Sequence[str],
     runner,
-) -> Dict[str, float]:
+) -> Tuple[Dict[str, float], Dict[str, float]]:
     """
-    Leave-one-out scores: remove each species (except critical), rerun short simulation,
-    compute PV error vs baseline.
+    Leave-one-out scores and post-ignition residual integrals for each species.
+    Returns two dictionaries keyed by species name.
     """
     logger.info("Building LOO scores on short window: tf=%.3e, steps=%d", tf_short, steps_short)
     W = _pv_weights_for(base_mech)
 
-    # Convenience lambdas to compute PV error aligned
-    def pv_err_against_baseline(red_res: BatchResult, red_mech: Mechanism) -> float:
-        return pv_error_aligned(
-            baseline.mass_fractions,
-            red_res.mass_fractions,
-            base_mech.species_names,
-            red_mech.species_names,
-            W,
-        )
+    tau_short = baseline.ignition_delay or ignition_delay(baseline.time, baseline.temperature)[0]
+    mask_post = baseline.time > tau_short
 
     scores: Dict[str, float] = {}
+    resid: Dict[str, float] = {}
     for s in base_mech.species_names:
         if s in critical:
-            scores[s] = 1.0  # force keep
+            scores[s] = 1.0
+            resid[s] = 0.0
             continue
         try:
             m = Mechanism(base_mech.file_path)
             m.remove_species([s])
             red = _baseline_short_run(m, T0, p0, Y0, tf_short, steps_short, log_times, runner)
-            score = pv_err_against_baseline(red, m)
+
+            score = pv_error_aligned(
+                baseline.mass_fractions,
+                red.mass_fractions,
+                base_mech.species_names,
+                m.species_names,
+                W,
+            )
+
+            Y_red_interp = np.zeros_like(baseline.mass_fractions)
+            for j, name in enumerate(base_mech.species_names):
+                if name in m.species_names:
+                    jr = m.species_names.index(name)
+                    Y_red_interp[:, j] = np.interp(baseline.time, red.time, red.mass_fractions[:, jr])
+
+            diff = np.abs(baseline.mass_fractions[mask_post] - Y_red_interp[mask_post])
+            resid_val = float(
+                np.trapz((diff * W[None, :]).sum(axis=1), baseline.time[mask_post])
+            )
+
             if not np.isfinite(score):
                 score = 0.0
+            if not np.isfinite(resid_val):
+                resid_val = 0.0
         except Exception as e:
             logger.debug("LOO failed for %s: %s", s, e)
             score = 0.0
+            resid_val = 0.0
         scores[s] = float(score)
+        resid[s] = resid_val
 
     # Normalize to [0,1]
     vals = np.array(list(scores.values()), dtype=float)
@@ -117,7 +135,14 @@ def _loo_scores(
     if vmax > 0:
         for k in scores:
             scores[k] = scores[k] / vmax
-    return scores
+
+    rv = np.array(list(resid.values()), dtype=float)
+    rmax = float(rv.max()) if rv.size else 0.0
+    if rmax > 0:
+        for k in resid:
+            resid[k] = resid[k] / rmax
+
+    return scores, resid
 
 
 def _centrality_scores(G, mech: Mechanism) -> Dict[str, float]:
@@ -155,14 +180,22 @@ def _build_species_labels(
         return {k: float(v) for k, v in labels.items()}
 
     # Compute fresh
-    loo = _loo_scores(
+    loo, resid = _loo_scores(
         mech, full_short, T0, p0, Y0, tf_short, steps_short, log_times, critical, runner
     )
     cen = _centrality_scores(G, mech)
 
     labels: Dict[str, float] = {}
     for s in mech.species_names:
-        labels[s] = float(alpha * loo.get(s, 0.0) + (1.0 - alpha) * cen.get(s, 0.0))
+        base = alpha * loo.get(s, 0.0) + (1.0 - alpha) * cen.get(s, 0.0)
+        labels[s] = float(base * (1.0 + 0.5 * resid.get(s, 0.0)))
+
+    # Renormalize to [0,1]
+    vals = np.array(list(labels.values()), dtype=float)
+    vmax = float(vals.max()) if vals.size else 0.0
+    if vmax > 0:
+        for k in labels:
+            labels[k] = labels[k] / vmax
 
     # Ensure critical are high
     for s in critical:
@@ -191,11 +224,11 @@ def evaluate_selection(
     steps,
     log_times,
     runner,
+    tau_full,
     tau_pv_full,
     tau_spts_full,
-    size_weight: float,
     target_species: int | None,
-    species_weight: float,
+    zeta: float = 20.0,
 ):
     reason = ""
 
@@ -222,6 +255,7 @@ def evaluate_selection(
                 nsteps=steps,
                 use_mole=False,
                 log_times=log_times,
+                time_grid=full_res.time,
             )
         except RuntimeError as e:
             if "no_reaction" in str(e) and attempt == 0:
@@ -236,16 +270,20 @@ def evaluate_selection(
             return -1e6, *info
         break
 
+    # interpolate reduced onto full time grid for penalties
+    Y_red_interp = np.zeros((len(full_res.time), len(mech.species_names)))
+    for j, s in enumerate(mech.species_names):
+        Y_red_interp[:, j] = np.interp(full_res.time, res.time, res.mass_fractions[:, j])
+
     err = pv_error_aligned(
         full_res.mass_fractions,
-        res.mass_fractions,
+        Y_red_interp,
         base_mech.species_names,
         mech.species_names,
         np.asarray(weights),
     )
-    delay_full = full_res.ignition_delay or ignition_delay(full_res.time, full_res.temperature)[0]
     delay_red, _ = ignition_delay(res.time, res.temperature)
-    delay_diff = abs(delay_red - delay_full) / max(delay_full, 1e-12)
+    delay_diff = abs(delay_red - tau_full) / max(tau_full, 1e-12)
     delta_T = float(res.temperature[-1] - res.temperature[0])
     delta_Y = float(np.max(np.abs(res.mass_fractions[-1] - res.mass_fractions[0])))
 
@@ -258,37 +296,32 @@ def evaluate_selection(
     log_red_spts = np.log10(tau_spts_red + 1e-30)
     tau_mis = np.linalg.norm(log_full_pv - log_red_pv) + np.linalg.norm(log_full_spts - log_red_spts)
 
+    # post-ignition species penalty
+    map_full = {s: i for i, s in enumerate(base_mech.species_names)}
+    map_red = {s: i for i, s in enumerate(mech.species_names)}
+    Y_red_full = np.zeros_like(full_res.mass_fractions)
+    for s, j in map_full.items():
+        if s in map_red:
+            Y_red_full[:, j] = Y_red_interp[:, map_red[s]]
+    mask_post = full_res.time > tau_full
+    diff = np.abs(full_res.mass_fractions[mask_post] - Y_red_full[mask_post])
+    pen_species = float(np.sum(np.asarray(weights) * diff.mean(axis=0)))
+
     keep_cnt = int(sel.sum())
-    size_pen = max(0.0, keep_cnt / len(selection) - 0.4)
-    size_pen = size_weight * size_pen
-    if target_species:
+    size_frac = keep_cnt / len(selection)
+    size_pen = 3.0 * max(0.0, size_frac - 0.4)
+    if target_species is not None:
         qpen = ((keep_cnt - target_species) / len(selection)) ** 2
-        size_pen += size_weight * qpen
+        size_pen += 3.0 * qpen
 
-    key = [s for s in ["O2", "CO2", "H2O", "CO", "CH4", "OH"] if s in mech.species_names and s in base_mech.species_names]
-    mf_full = {s: base_mech.species_names.index(s) for s in key}
-    mf_red = {s: mech.species_names.index(s) for s in key}
-    delay_full = full_res.ignition_delay or ignition_delay(full_res.time, full_res.temperature)[0]
-    tcut = delay_full * 1.05
-    mask_f = full_res.time >= tcut
-    mask_r = res.time >= tcut
-    spec_err = 0.0
-    for s in key:
-        yf = full_res.mass_fractions[mask_f, mf_full[s]]
-        yr = np.interp(full_res.time[mask_f], res.time[mask_r], res.mass_fractions[mask_r, mf_red[s]])
-        spec_err += float(np.linalg.norm(yf - yr) / (np.linalg.norm(yf) + 1e-12))
-    if key:
-        spec_err /= len(key)
-
-    alpha_f, beta_f, delta_f = 1.0, 10.0, 1.0
-    fitness = -(alpha_f * err + beta_f * delay_diff + size_pen + delta_f * tau_mis + species_weight * spec_err)
+    fitness = -(1.0 * err + 12.0 * delay_diff + 1.0 * tau_mis + zeta * pen_species + size_pen)
 
     info = (
         float(err),
         float(delay_diff),
         float(size_pen),
         float(tau_mis),
-        float(spec_err),
+        float(pen_species),
         reason,
         keep_cnt,
         float(delta_T),
@@ -296,12 +329,13 @@ def evaluate_selection(
         float(delay_red),
     )
     logger.info(
-        "ΔT=%.3e ΔY=%.3e delay=%.3e pv_err=%.3e τ_mis=%.3e fitness=%.3e",
+        "ΔT=%.3e ΔY=%.3e delay=%.3e pv_err=%.3e τ_mis=%.3e pen=%.3e fitness=%.3e",
         delta_T,
         delta_Y,
         delay_red,
         err,
         tau_mis,
+        pen_species,
         fitness,
     )
 
@@ -328,8 +362,9 @@ def run_ga_reduction(
     min_species: int | None = None,
     max_species: int | None = None,
     target_species: int | None = None,
-    size_weight: float = 3.0,
-    species_weight: float = 2.0,
+    generations: int = 60,
+    population_size: int = 40,
+    mutation_rate: float = 0.25,
 ):
     mech = Mechanism(mech_path)
 
@@ -347,6 +382,25 @@ def run_ga_reduction(
         log_times=log_times,
     )
     delay_full, slope_full = ignition_delay(full.time, full.temperature)
+    if log_times:
+        t0 = max(1e-12, 0.8 * delay_full)
+        t1 = min(tf, 1.6 * delay_full)
+        dense = np.linspace(t0, t1, 200)
+        coarse = np.geomspace(1e-12, tf, steps)
+        time_grid = np.unique(np.concatenate((coarse, dense)))
+        time_grid = np.insert(time_grid, 0, 0.0)
+        full = runner(
+            mech.solution,
+            T0,
+            p0,
+            Y0,
+            tf,
+            nsteps=len(time_grid) - 1,
+            use_mole=False,
+            log_times=False,
+            time_grid=time_grid,
+        )
+        delay_full, slope_full = ignition_delay(full.time, full.temperature)
     logger.info(
         "Reference ignition delay %.3e s, max dT/dt %.3e K/s",
         delay_full,
@@ -377,15 +431,15 @@ def run_ga_reduction(
             "CH4",
             "O2",
             "N2",
-            "O",
-            "H",
-            "OH",
-            "HO2",
-            "H2O2",
+            "H2O",
             "CO",
             "CO2",
+            "OH",
+            "H",
+            "O",
+            "HO2",
+            "H2O2",
             "H2",
-            "H2O",
         ]
         if s in mech.species_names
     ]
@@ -434,7 +488,7 @@ def run_ga_reduction(
     )
 
     # Fallback if the GNN is degenerate
-    if np.allclose(scores_arr, 0.0) or std < 1e-8:
+    if std < 1e-6:
         logger.warning("Using degree centrality as fallback for seeding.")
         seed_scores = np.array([G.degree(n) for n in mech.species_names], dtype=float)
     else:
@@ -444,7 +498,7 @@ def run_ga_reduction(
 
     # GA seeding & constraints
     critical_idxs = [mech.species_names.index(s) for s in critical]
-    pop_size = 30
+    pop_size = population_size
     k = max(len(critical_idxs), int(0.2 * genome_len))
 
     seed = np.zeros(genome_len, dtype=int)
@@ -468,14 +522,13 @@ def run_ga_reduction(
         critical_idxs,
         T0,
         p0,
-        steps,
+        len(full.time) - 1,
         log_times,
         runner,
+        delay_full,
         tau_pv_full,
         tau_spts_full,
-        size_weight,
         target_species,
-        species_weight,
     )
 
     ms = min_species or (len(critical_idxs) + 5)
@@ -486,10 +539,10 @@ def run_ga_reduction(
         eval_fn,
         GAOptions(
             population_size=pop_size,
-            generations=25,
+            generations=generations,
             min_species=ms,
             max_species=M,
-            mutation_rate=0.2,
+            mutation_rate=mutation_rate,
         ),
         return_history=True,
         initial_population=init_pop,
@@ -500,22 +553,38 @@ def run_ga_reduction(
     # Debug drops per-gen
     os.makedirs("results", exist_ok=True)
     for g, gen in enumerate(debug):
-        # fitness is at -2 index (last before genome)
         best_g = max(gen, key=lambda x: x[-2])
-        pv_err, delay_diff, size_pen, tau_mis, spec_err, reason, keep_cnt, dT, dY, delay_red, fit, genome = best_g
+        pv_err, delay_diff, size_pen, tau_mis, pen_species, reason, keep_cnt, dT, dY, delay_red, fit, genome = best_g
         logger.info(
-            "gen %02d keep=%d ΔT=%.3e delay=%.3e pv_err=%.3e τ_mis=%.3e spec_err=%.3e fitness=%.3e",
+            "gen %02d keep=%d ΔT=%.3e delay=%.3e pv_err=%.3e τ_mis=%.3e pen=%.3e fitness=%.3e",
             g,
             keep_cnt,
             dT,
             delay_red,
             pv_err,
             tau_mis,
-            spec_err,
+            pen_species,
             fit,
         )
         with open(os.path.join("results", f"best_selection_gen{g:02d}.txt"), "w") as f:
             f.write(",".join(map(str, genome.tolist())))
+
+    # Selection report
+    kept = []
+    dropped = []
+    for i, s in enumerate(mech.species_names):
+        if sel[i]:
+            kept.append((s, labels.get(s, 0.0), scores.get(s, 0.0)))
+        else:
+            dropped.append((s, labels.get(s, 0.0), scores.get(s, 0.0)))
+    kept.sort(key=lambda x: x[1], reverse=True)
+    dropped.sort(key=lambda x: x[1], reverse=True)
+    with open(os.path.join("results", "selection_report.csv"), "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["status", "species", "label", "score"])
+        for status, data in [("kept", kept[:20]), ("dropped", dropped[:20])]:
+            for s, lab, sc in data:
+                writer.writerow([status, s, lab, sc])
 
     with open("best_selection.txt", "w") as f:
         f.write(",".join(map(str, sel.tolist())))
@@ -545,10 +614,11 @@ def full_pipeline(
     min_species: int | None = None,
     max_species: int | None = None,
     target_species: int | None = None,
-    size_weight: float = 3.0,
-    species_weight: float = 2.0,
-    zoom_around_tau: float | None = None,
-    ymax: float | None = None,
+    generations: int = 60,
+    population: int = 40,
+    mutation: float = 0.25,
+    focus: str = "auto",
+    focus_window: Tuple[float, float] | None = None,
 ):
     mech = Mechanism(mech_path)
 
@@ -591,8 +661,9 @@ def full_pipeline(
         min_species=min_species,
         max_species=max_species,
         target_species=target_species,
-        size_weight=size_weight,
-        species_weight=species_weight,
+        generations=generations,
+        population_size=population,
+        mutation_rate=mutation,
     )
 
     os.makedirs(out_dir, exist_ok=True)
@@ -614,7 +685,7 @@ def full_pipeline(
             "delay_diff",
             "size_penalty",
             "tau_mismatch",
-            "spec_err",
+            "pen_species",
             "reason",
             "keep_count",
             "delta_T",
@@ -624,8 +695,8 @@ def full_pipeline(
         ])
         for g, gen in enumerate(debug):
             for i, d in enumerate(gen):
-                pv_err, delay_diff, size_pen, tau_mis, spec_err, reason, keep_cnt, dT, dY, delay_red, fit, genome = d
-                writer.writerow([g, i, pv_err, delay_diff, size_pen, tau_mis, spec_err, reason, keep_cnt, dT, dY, delay_red, fit])
+                pv_err, delay_diff, size_pen, tau_mis, pen_species, reason, keep_cnt, dT, dY, delay_red, fit, genome = d
+                writer.writerow([g, i, pv_err, delay_diff, size_pen, tau_mis, pen_species, reason, keep_cnt, dT, dY, delay_red, fit])
 
         # Build reduced mechanism from best selection
     best_sel = sols[0]
@@ -645,9 +716,10 @@ def full_pipeline(
         p0,
         Y0,
         tf,
-        nsteps=len(full.time) - 1,   # match density closely
+        nsteps=len(full.time) - 1,
         use_mole=False,
         log_times=log_times,
+        time_grid=full.time,
     )
 
     # Informative species (like paper)
@@ -657,12 +729,27 @@ def full_pipeline(
     delay_full, _ = ignition_delay(full.time, full.temperature)
     delay_red,  _ = ignition_delay(red.time,  red.temperature)
 
-    if zoom_around_tau is not None:
-        half = float(zoom_around_tau)
-        xlim = (delay_full / (10 ** half), delay_full * (10 ** half))
+    # Residuals per species after ignition
+    mask = full.time > delay_full
+    map_full = {s: i for i, s in enumerate(mech.species_names)}
+    map_red = {s: i for i, s in enumerate(red_mech.species_names)}
+    with open(os.path.join(out_dir, "residual_species.csv"), "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["species", "mean_res", "max_res"])
+        for s in mech.species_names:
+            if s not in map_red:
+                continue
+            yf = full.mass_fractions[mask, map_full[s]]
+            yr = np.interp(full.time[mask], red.time, red.mass_fractions[:, map_red[s]])
+            diff = np.abs(yf - yr)
+            writer.writerow([s, float(diff.mean()), float(diff.max())])
+
+    if focus == "auto":
+        fw = (0.8 * delay_full, 1.6 * delay_full)
+    elif focus == "window" and focus_window is not None:
+        fw = focus_window
     else:
-        xlim = None
-    ylim = (None, ymax) if ymax is not None else None
+        fw = None
 
     plot_species_profiles(
         full.time,
@@ -675,8 +762,8 @@ def full_pipeline(
         os.path.join(out_dir, "profiles"),
         tau_full=delay_full,
         tau_red=delay_red,
-        xlim=xlim,
-        ylim=ylim,
+        focus=focus,
+        focus_window=fw,
     )
 
     plot_species_residuals(
@@ -688,7 +775,9 @@ def full_pipeline(
         red_mech.species_names,
         key_species,
         os.path.join(out_dir, "profiles_residual"),
-        xlim=xlim,
+        tau_full=delay_full,
+        focus=focus,
+        focus_window=fw,
     )
 
     # 2) Ignition delay bars
@@ -728,8 +817,9 @@ def full_pipeline(
         red.time,
         pv_red,
         os.path.join(out_dir, "pv_overlay"),
-        tau=delay_full,
-        xlim=xlim,
+        tau_full=delay_full,
+        focus=focus,
+        focus_window=fw,
     )
 
     # 5) Time-scales overlay (PVTS / SPTS)
