@@ -49,6 +49,15 @@ def main():
         help="Custom focus window tmin tmax when --focus=window",
     )
 
+    # Compatibility placeholders for downstream tests
+    parser.add_argument("--fitness-mode", default="standard")
+    parser.add_argument("--tol-pv", type=float, default=0.05)
+    parser.add_argument("--tol-delay", type=float, default=0.05)
+    parser.add_argument("--tol-timescale", type=float, default=0.05)
+    parser.add_argument("--tol-resid", type=float, default=0.05)
+    parser.add_argument("--phaseB-unlock", action="store_true")
+    parser.add_argument("--report-grid", default=None)
+
     args = parser.parse_args()
 
     full_pipeline(
@@ -74,6 +83,7 @@ def main():
         mutation=args.mutation,
         focus=args.focus,
         focus_window=tuple(args.focus_window) if args.focus_window else None,
+        report_grid=args.report_grid,
     )
     print(f"\n✅ Pipeline complete. Results written to '{args.out}'\n")
 

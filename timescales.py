@@ -53,13 +53,13 @@ def pv_timescale(
 
 
 def spts(time: np.ndarray, Y: np.ndarray) -> np.ndarray:
-    """Return scalar progress time scale (SPTS).
+    r"""Return scalar progress time scale (SPTS).
 
     The SPTS is approximated from finite differences as
 
     .. math::
 
-        τ_{SPTS} = \frac{\|Y^* - Y(t)\|_2}{\|dY/dt\|_2}
+        \tau_{SPTS} = \frac{\|Y^* - Y(t)\|_2}{\|dY/dt\|_2}
 
     where ``Y*`` is the final state.
     """
