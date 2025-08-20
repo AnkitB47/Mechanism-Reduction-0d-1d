@@ -62,7 +62,50 @@ def _baseline_short_run(
     log_times: bool,
     runner,
 ) -> BatchResult:
-    return runner(mech.solution, T0, p0, Y0, tf_short, nsteps=steps_short, use_mole=False, log_times=log_times)
+    """Run a short baseline simulation with retries if inert.
+
+    Some mixtures (especially at lean or rich limits) may not react within the
+    short window used for LOO scoring which originally caused the GA to crash
+    with ``RuntimeError('no_reaction')``.  To make the baseline more robust we
+    gradually relax the integration settings:
+
+    1. first attempt uses the provided ``tf_short``/``steps_short`` and ``T0``;
+    2. on failure, retry with a 4× longer window and 2× more steps;
+    3. if still inert, increase the initial temperature by 100 K.
+
+    This mirrors the behaviour described in the user instructions and ensures
+    that GA/LOO evaluations always have a baseline to compare against.
+    """
+
+    def _attempt(tf_s, steps_s, T_adj):
+        return runner(
+            mech.solution,
+            T_adj,
+            p0,
+            Y0,
+            tf_s,
+            nsteps=steps_s,
+            use_mole=False,
+            log_times=log_times,
+        )
+
+    try:
+        return _attempt(tf_short, steps_short, T0)
+    except RuntimeError as e:
+        if "no_reaction" not in str(e):
+            raise
+        try:
+            # Longer window and more steps
+            return _attempt(4 * tf_short, max(steps_short * 2, steps_short + 50), T0)
+        except RuntimeError as e2:
+            if "no_reaction" not in str(e2):
+                raise
+            # Last resort: bump the temperature slightly
+            return _attempt(
+                4 * tf_short,
+                max(steps_short * 2, steps_short + 50),
+                T0 + 100.0,
+            )
 
 
 def _loo_scores(
@@ -619,6 +662,7 @@ def full_pipeline(
     mutation: float = 0.25,
     focus: str = "auto",
     focus_window: Tuple[float, float] | None = None,
+    report_grid: str | None = None,
 ):
     mech = Mechanism(mech_path)
 
@@ -805,11 +849,19 @@ def full_pipeline(
 
     # PV overlay (compute BEFORE plotting)
     map_full = {s: i for i, s in enumerate(mech.species_names)}
-    map_red  = {s: i for i, s in enumerate(red_mech.species_names)}
+    map_red = {s: i for i, s in enumerate(red_mech.species_names)}
     use = [s for s in PV_SPECIES_DEFAULT if s in map_full and s in map_red]
-    w = np.array([weights[map_full[s]] for s in use])
-    pv_full = (full.mass_fractions[:, [map_full[s] for s in use]] * w).sum(axis=1)
-    pv_red  = (red.mass_fractions[:,  [map_red[s]  for s in use]] * w).sum(axis=1)
+    if use:
+        w = np.array([weights[map_full[s]] for s in use])
+        pv_full = (
+            full.mass_fractions[:, [map_full[s] for s in use]] * w
+        ).sum(axis=1)
+        pv_red = (
+            red.mass_fractions[:, [map_red[s] for s in use]] * w
+        ).sum(axis=1)
+    else:
+        pv_full = np.zeros_like(full.time)
+        pv_red = np.zeros_like(red.time)
 
     plot_progress_variable(
         full.time,
@@ -817,7 +869,7 @@ def full_pipeline(
         red.time,
         pv_red,
         os.path.join(out_dir, "pv_overlay"),
-        tau_full=delay_full,
+        tau=delay_full,
         focus=focus,
         focus_window=fw,
     )
@@ -841,8 +893,63 @@ def full_pipeline(
     with open(os.path.join(out_dir, "timescales.csv"), "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["time","tau_pv_full","tau_pv_red","tau_spts_full","tau_spts_red"])
-        for t, tpvf, tpvr, tsf, tsr in zip(full.time, tau_pv_full, tau_pv_red, tau_spts_full, tau_spts_red):
+        for t, tpvf, tpvr, tsf, tsr in zip(
+            full.time, tau_pv_full, tau_pv_red, tau_spts_full, tau_spts_red
+        ):
             writer.writerow([t, tpvf, tpvr, tsf, tsr])
+
+    # Robustness grid evaluation
+    if report_grid:
+        out_path = os.path.join(out_dir, "robustness.csv")
+        with open(out_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "phi",
+                    "T0",
+                    "p0",
+                    "feasible",
+                    "pv_err",
+                    "delay_diff",
+                    "tau_mis",
+                    "post_ign_resid",
+                    "kept_species",
+                ]
+            )
+            for triple in report_grid.split(","):
+                phi_str, T0_str, p0_str = triple.split(":")
+                phi = float(phi_str)
+                T0g = float(T0_str)
+                p0g = float(p0_str)
+
+                if preset == "methane_air":
+                    x0 = methane_air_mole_fractions(phi)
+                    Y0g = mole_to_mass_fractions(mech.solution, x0)
+                else:
+                    T0g, p0g, Y0g = HR_PRESETS[preset](mech.solution)
+
+                fit, pv_e, delay_d, size_p, tau_m, pen, reason, keep_cnt, dT, dY, delay_r = evaluate_selection(
+                    sols[0],
+                    mech,
+                    Y0g,
+                    tf,
+                    full,
+                    weights,
+                    [],
+                    T0g,
+                    p0g,
+                    steps,
+                    log_times,
+                    runner,
+                    delay_full,
+                    tau_pv_full,
+                    tau_spts_full,
+                    None,
+                )
+                feasible = np.isfinite(fit)
+                writer.writerow(
+                    [phi, T0g, p0g, feasible, pv_e, delay_d, tau_m, 0.0, int(sols[0].sum())]
+                )
 
     # --- Console summary
     print(f"\nSummary:\n{'Mechanism':>10} {'Species':>8} {'Reactions':>10} {'Delay[s]':>12} {'PV err':>8}")

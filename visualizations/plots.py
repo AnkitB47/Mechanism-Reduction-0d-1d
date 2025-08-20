@@ -243,16 +243,27 @@ def plot_progress_variable(
     pv_red: np.ndarray,
     out_base: str,
     *,
+    tau: float | None = None,
     tau_full: float | None = None,
     focus: str | None = None,
     focus_window: tuple[float, float] | None = None,
 ) -> None:
     """Overlay progress variables for full vs. reduced mechanisms."""
+    if tau_full is None:
+        tau_full = tau
+
     fig, ax = plt.subplots()
     ax.semilogx(time_full, pv_full, label="PV full", linewidth=2)
     mk_every = _downsample_markevery(len(time_red))
-    ax.semilogx(time_red, pv_red, linestyle="none", marker="o",
-                fillstyle="none", markevery=mk_every, label="PV reduced")
+    ax.semilogx(
+        time_red,
+        pv_red,
+        linestyle="none",
+        marker="o",
+        fillstyle="none",
+        markevery=mk_every,
+        label="PV reduced",
+    )
     if tau_full is not None and np.isfinite(tau_full) and tau_full > 0:
         ax.axvline(tau_full, color="0.4", ls="--", lw=1)
 
