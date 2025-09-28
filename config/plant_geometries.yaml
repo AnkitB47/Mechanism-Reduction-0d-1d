@@ -1,0 +1,102 @@
+# Plant Application Geometries
+# Geometry A (≈450 L) and Geometry B (≈134 L)
+
+geometries:
+  plant_a:
+    name: "Plant A - Large Scale"
+    description: "Industrial-scale reactor geometry"
+    volume_L: 450.0
+    
+    # Dimensions (m)
+    total_length: 4.5
+    diameter_constant: 0.60
+    diameter_narrow: 0.50
+    narrow_start_height: 3.0
+    
+    # Segments
+    segments:
+      - name: "preheat"
+        length: 0.4
+        diameter: 0.60
+      - name: "reaction_chamber_1"
+        length: 0.3
+        diameter: 0.60
+      - name: "reaction_chamber_2"
+        length: 3.8
+        diameter: 0.50
+    
+    # Operating envelope
+    operating_envelope:
+      pressure_range_bar_g: [30, 80]
+      temperature_range_C: [1000, 1500]
+      flow_range_kgph: [500, 2000]
+      o2_c_ratio_range: [0.5, 0.7]
+    
+    # Heat transfer
+    heat_transfer:
+      wall_temp_C: 150.0
+      heat_loss_fraction: 0.015
+
+  plant_b:
+    name: "Plant B - Medium Scale"
+    description: "Medium-scale reactor geometry"
+    volume_L: 134.0
+    
+    # Dimensions (m)
+    total_length: 3.2
+    diameter_constant: 0.45
+    diameter_narrow: 0.38
+    narrow_start_height: 2.2
+    
+    # Segments
+    segments:
+      - name: "preheat"
+        length: 0.3
+        diameter: 0.45
+      - name: "reaction_chamber_1"
+        length: 0.2
+        diameter: 0.45
+      - name: "reaction_chamber_2"
+        length: 2.7
+        diameter: 0.38
+    
+    # Operating envelope
+    operating_envelope:
+      pressure_range_bar_g: [25, 70]
+      temperature_range_C: [950, 1450]
+      flow_range_kgph: [200, 800]
+      o2_c_ratio_range: [0.5, 0.7]
+    
+    # Heat transfer
+    heat_transfer:
+      wall_temp_C: 130.0
+      heat_loss_fraction: 0.012
+
+# Common natural gas compositions for plant applications
+ng_compositions:
+  typical:
+    CH4_volpct: 95.5
+    CO2_volpct: 0.5
+    C2H6_volpct: 2.0
+    C3H8_volpct: 0.4
+    nC4H10_volpct: 0.05
+    iC4H10_volpct: 0.05
+    N2_volpct: 1.5
+  
+  high_ethane:
+    CH4_volpct: 92.0
+    CO2_volpct: 0.8
+    C2H6_volpct: 5.0
+    C3H8_volpct: 1.0
+    nC4H10_volpct: 0.1
+    iC4H10_volpct: 0.1
+    N2_volpct: 1.0
+  
+  lean:
+    CH4_volpct: 98.0
+    CO2_volpct: 0.2
+    C2H6_volpct: 1.0
+    C3H8_volpct: 0.2
+    nC4H10_volpct: 0.05
+    iC4H10_volpct: 0.05
+    N2_volpct: 0.5

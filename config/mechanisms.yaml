@@ -1,0 +1,60 @@
+# Mechanism Configuration
+# Supported detailed mechanisms for HP-POX validation
+
+mechanisms:
+  gri30:
+    name: "GRI-Mech 3.0"
+    file: "data/gri30.yaml"
+    description: "Standard mechanism for natural gas combustion"
+    species_count: 53
+    reactions_count: 325
+    temperature_range_K: [300, 3000]
+    pressure_range_atm: [0.1, 100]
+    
+  polimi:
+    name: "POLIMI C1-C3"
+    file: "data/polimi.yaml"
+    description: "POLIMI mechanism for C1-C3 hydrocarbons"
+    species_count: 78
+    reactions_count: 1200
+    temperature_range_K: [300, 2500]
+    pressure_range_atm: [0.1, 100]
+    
+  aramco:
+    name: "AramcoMech 2.0"
+    file: "data/aramco.yaml"
+    description: "AramcoMech 2.0 for natural gas and syngas"
+    species_count: 295
+    reactions_count: 1840
+    temperature_range_K: [300, 3000]
+    pressure_range_atm: [0.1, 100]
+    
+  usc_ii:
+    name: "USC-II"
+    file: "data/usc_ii.yaml"
+    description: "USC mechanism version II"
+    species_count: 111
+    reactions_count: 784
+    temperature_range_K: [300, 3000]
+    pressure_range_atm: [0.1, 100]
+
+# Default mechanism for HP-POX validation
+default_mechanism: "gri30"
+
+# Mechanism reduction targets
+reduction_targets:
+  species_counts: [20, 30, 40, 50, 60, 70, 80]
+  max_error_pct: 5.0
+  validation_cases: ["case_1", "case_4"]
+  
+# Transport models
+transport:
+  mixture_averaged: true
+  multicomponent: false  # More accurate but slower
+  
+# Chemistry solver settings
+chemistry:
+  atol: 1e-18
+  rtol: 1e-8
+  max_steps: 10000
+  max_time_s: 1.0

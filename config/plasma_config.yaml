@@ -1,0 +1,29 @@
+# Plasma Surrogate Configuration
+
+thermal_model:
+  power_kW: 100.0
+  efficiency: 0.8
+  temperature_rise_C: 200.0
+
+radical_model:
+  power_kW: 100.0
+  efficiency: 0.1
+  radical_fractions:
+    H: 0.4
+    O: 0.3
+    OH: 0.2
+    O2: 0.1
+
+injection_location: 0.5  # m from inlet
+
+operating_conditions:
+  pressure_range_bar_g: [30, 80]
+  temperature_range_C: [1000, 1500]
+  power_range_kW: [50, 500]
+
+# Validation tolerances
+validation:
+  ch4_conversion_tolerance_pct: 5.0
+  h2_co_ratio_tolerance: 0.1
+  ignition_reduction_tolerance_pct: 10.0
+  efficiency_improvement_tolerance_pct: 5.0

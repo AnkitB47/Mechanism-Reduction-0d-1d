@@ -1,0 +1,293 @@
+# HP-POX Benchmark Cases - Richter et al. (Fuel 2015)
+# Operating conditions and inlet streams for Cases 1-4
+
+cases:
+  case_1:
+    name: "Baseline - 50 bar, 1200°C"
+    pressure_bar_g: 50.0
+    target_reactor_temp_C: 1200.0
+    residence_time_s: 15.5
+    
+    # Inlet streams (kg/h)
+    primary_steam_kgph: 78.02
+    primary_steam_T_C: 289.6
+    secondary_steam_kgph: 23.15
+    secondary_steam_T_C: 240.2
+    oxygen_kgph: 265.37
+    oxygen_T_C: 240.2
+    n2_optical_kgph: 4.72
+    n2_T_C: 25.0
+    natural_gas_kgph: 224.07
+    natural_gas_T_C: 359.1
+    
+    # Natural gas composition (vol%)
+    ng_composition:
+      CH4_volpct: 95.97
+      CO2_volpct: 0.34
+      C2H6_volpct: 2.26
+      C3H8_volpct: 0.46
+      nC4H10_volpct: 0.05
+      iC4H10_volpct: 0.06
+      N2_volpct: 0.86
+    
+    # Expected outlet syngas (dry, vol%)
+    expected_outlet:
+      H2_volpct: 48.27
+      N2_volpct: 0.65
+      CO_volpct: 23.79
+      CO2_volpct: 4.19
+      H2O_volpct: 19.33
+      CH4_volpct: 3.76
+    
+    # Flame characteristics (Optisos)
+    flame:
+      length_mm: 265
+      max_width_mm: 41
+      area_mm2: 4900
+    
+    # Axial gas temperature checkpoints (°C)
+    axial_temps:
+      G1to4_mean_C: 1110
+      G5to8_mean_C: 1152
+      G9to11_mean_C: 1135
+      G12_control_C: 1201
+      G13_center_C: 1154
+      G14_wall_C: 1112
+    
+    # Outer wall temperatures (°C)
+    wall_temps:
+      W1_C: 133
+      W2_C: 137
+      W3_C: 143
+      W4_C: 132
+      W5_C: 141
+      W6_C: 143
+      W7_C: 102
+
+  case_2:
+    name: "Pressure effect - 60 bar, 1200°C"
+    pressure_bar_g: 60.0
+    target_reactor_temp_C: 1200.0
+    residence_time_s: 15.5
+    
+    primary_steam_kgph: 90.01
+    primary_steam_T_C: 299.2
+    secondary_steam_kgph: 28.63
+    secondary_steam_T_C: 239.6
+    oxygen_kgph: 312.19
+    oxygen_T_C: 239.6
+    n2_optical_kgph: 5.49
+    n2_T_C: 25.0
+    natural_gas_kgph: 267.37
+    natural_gas_T_C: 362.1
+    
+    ng_composition:
+      CH4_volpct: 96.49
+      CO2_volpct: 0.20
+      C2H6_volpct: 1.91
+      C3H8_volpct: 0.44
+      nC4H10_volpct: 0.05
+      iC4H10_volpct: 0.06
+      N2_volpct: 0.85
+    
+    expected_outlet:
+      H2_volpct: 48.32
+      N2_volpct: 0.65
+      CO_volpct: 23.73
+      CO2_volpct: 4.10
+      H2O_volpct: 19.04
+      CH4_volpct: 4.17
+    
+    flame:
+      length_mm: 271
+      max_width_mm: 43
+      area_mm2: 5800
+    
+    axial_temps:
+      G1to4_mean_C: 1108
+      G5to8_mean_C: 1149
+      G9to11_mean_C: 1133
+      G12_control_C: 1201
+      G13_center_C: 1151
+      G14_wall_C: 1116
+    
+    wall_temps:
+      W1_C: 131
+      W2_C: 135
+      W3_C: 141
+      W4_C: 130
+      W5_C: 139
+      W6_C: 140
+      W7_C: 105
+
+  case_3:
+    name: "Pressure effect - 70 bar, 1200°C"
+    pressure_bar_g: 70.0
+    target_reactor_temp_C: 1200.0
+    residence_time_s: 15.5
+    
+    primary_steam_kgph: 107.23
+    primary_steam_T_C: 309.7
+    secondary_steam_kgph: 31.50
+    secondary_steam_T_C: 240.6
+    oxygen_kgph: 355.88
+    oxygen_T_C: 240.6
+    n2_optical_kgph: 5.76
+    n2_T_C: 25.0
+    natural_gas_kgph: 314.48
+    natural_gas_T_C: 365.3
+    
+    ng_composition:
+      CH4_volpct: 95.70
+      CO2_volpct: 0.42
+      C2H6_volpct: 2.38
+      C3H8_volpct: 0.47
+      nC4H10_volpct: 0.06
+      iC4H10_volpct: 0.07
+      N2_volpct: 0.90
+    
+    expected_outlet:
+      H2_volpct: 48.40
+      N2_volpct: 0.63
+      CO_volpct: 23.64
+      CO2_volpct: 4.13
+      H2O_volpct: 18.64
+      CH4_volpct: 4.55
+    
+    flame:
+      length_mm: 274
+      max_width_mm: 45
+      area_mm2: 6600
+    
+    axial_temps:
+      G1to4_mean_C: 1107
+      G5to8_mean_C: 1146
+      G9to11_mean_C: 1130
+      G12_control_C: 1198
+      G13_center_C: 1146
+      G14_wall_C: 1118
+    
+    wall_temps:
+      W1_C: 128
+      W2_C: 132
+      W3_C: 138
+      W4_C: 126
+      W5_C: 136
+      W6_C: 138
+      W7_C: 108
+
+  case_4:
+    name: "High temperature - 50 bar, 1400°C"
+    pressure_bar_g: 50.0
+    target_reactor_temp_C: 1400.0
+    residence_time_s: 15.5
+    
+    primary_steam_kgph: 64.39
+    primary_steam_T_C: 277.5
+    secondary_steam_kgph: 22.77
+    secondary_steam_T_C: 239.9
+    oxygen_kgph: 280.25
+    oxygen_T_C: 239.9
+    n2_optical_kgph: 4.79
+    n2_T_C: 25.0
+    natural_gas_kgph: 195.90
+    natural_gas_T_C: 355.2
+    
+    ng_composition:
+      CH4_volpct: 96.20
+      CO2_volpct: 0.26
+      C2H6_volpct: 2.09
+      C3H8_volpct: 0.47
+      nC4H10_volpct: 0.05
+      iC4H10_volpct: 0.06
+      N2_volpct: 0.87
+    
+    expected_outlet:
+      H2_volpct: 48.06
+      N2_volpct: 0.67
+      CO_volpct: 25.61
+      CO2_volpct: 3.89
+      H2O_volpct: 21.71
+      CH4_volpct: 0.06
+    
+    flame:
+      length_mm: null  # Optics fouled - not reliable
+      max_width_mm: null
+      area_mm2: null
+    
+    axial_temps:
+      G1to4_mean_C: 1335
+      G5to8_mean_C: 1376
+      G9to11_mean_C: 1376
+      G12_control_C: 1401
+      G13_center_C: 1385
+      G14_wall_C: 1323
+    
+    wall_temps:
+      W1_C: 140
+      W2_C: 146
+      W3_C: 154
+      W4_C: 140
+      W5_C: 149
+      W6_C: 151
+      W7_C: 107
+
+# Reactor geometry (Freiberg HP-POX test plant)
+geometry:
+  name: "Freiberg HP-POX Test Plant"
+  description: "Semi-industrial test plant, 5 MW thermal capacity"
+  
+  # Dimensions (m)
+  total_length: 3.0
+  diameter_constant: 0.50
+  diameter_narrow: 0.44
+  narrow_start_height: 2.31
+  
+  # Segments
+  segments:
+    - name: "preheat"
+      length: 0.305
+      diameter: 0.50
+    - name: "reaction_chamber_1"
+      length: 0.190
+      diameter: 0.50
+    - name: "reaction_chamber_2"
+      length: 2.470
+      diameter: 0.44
+  
+  # Materials
+  refractory:
+    material: "Al2O3"
+    purity: 98.5
+    thickness: 0.1  # estimated
+  
+  # Burner configuration
+  burner:
+    type: "multi_channel_top_mounted"
+    swirling: false
+    configuration: "concentric_rings"
+    position: 0.305  # m below flange
+
+# Heat transfer models
+heat_transfer:
+  # Fixed wall temperature profile (from measurements)
+  fixed_wall_temp:
+    enabled: true
+    profile: "constant"  # or "linear" or "measured"
+    base_temp_C: 140.0
+  
+  # Effective heat transfer coefficient
+  effective_htc:
+    enabled: false
+    U_W_m2K: 50.0  # estimated
+    wall_temp_C: 140.0
+  
+  # Heat loss fraction
+  heat_loss_fraction: 0.01  # <1% of total energy
+
+# Validation tolerances
+validation:
+  temperature_tolerance_C: 50.0
+  composition_tolerance_pct: 5.0
+  flame_length_tolerance_mm: 20.0
+  pressure_drop_tolerance_pct: 10.0
