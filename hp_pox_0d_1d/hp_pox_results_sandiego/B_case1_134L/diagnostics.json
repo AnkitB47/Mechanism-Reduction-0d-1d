@@ -1,0 +1,17 @@
+{
+  "T_out": 1300.0,
+  "Q_burner": 34290.0,
+  "Q_chem": 0.0,
+  "residual": 0.001,
+  "converged": true,
+  "steps": 0,
+  "omega_max": 0.0,
+  "omega_min": 0.0,
+  "h_mol_max": 0.0,
+  "h_mol_min": 0.0,
+  "h_out_J_kg": -2320691.1852670377,
+  "enthalpy_difference_J_kg": 0.0,
+  "min_residual": 0.001,
+  "n_halvings": 0,
+  "cvode_steps": 0
+}

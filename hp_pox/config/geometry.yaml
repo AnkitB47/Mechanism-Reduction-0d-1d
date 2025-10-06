@@ -1,0 +1,7 @@
+pfr:
+  diameter_m: 0.49
+  length_m: 2.32
+psr:
+  volume_m3: 0.016136
+wall:
+  temperature_K: 418.0

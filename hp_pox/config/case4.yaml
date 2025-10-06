@@ -1,0 +1,41 @@
+feeds:
+  natural_gas:
+    composition:
+      C2H6: 2.09
+      C3H8: 0.47
+      CH4: 96.2
+      CO2: 0.26
+      N2: 0.87
+      iC4H10: 0.06
+      nC4H10: 0.05
+    mass_flow_kg_h: 195.9
+    temperature_C: 355.2
+  oxygen:
+    composition:
+      O2: 1.0
+    mass_flow_kg_h: 280.25
+    temperature_C: 239.9
+  primary_steam:
+    composition:
+      H2O: 1.0
+    mass_flow_kg_h: 64.39
+    temperature_C: 277.5
+  secondary_steam:
+    composition:
+      H2O: 1.0
+    mass_flow_kg_h: 22.77
+    temperature_C: 239.9
+heat_loss:
+  burner_cooling_kW: 36.36
+  reactor_wall_kW: 22.92
+name: "Case 4 (50 bar(g), target 1400\xB0C)"
+pressure_gauge_bar: 50.0
+target_temperature_C: 1400.0
+targets:
+  dry_composition_pct:
+    CH4: 0.06
+    CO: 25.61
+    CO2: 3.89
+    H2: 48.06
+    N2: 0.67
+  outlet_temperature_C: 1401.0

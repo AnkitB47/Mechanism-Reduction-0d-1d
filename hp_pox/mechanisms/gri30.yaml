@@ -1,0 +1,219 @@
+# GRI-3.0 mechanism placeholder
+# This is a simplified version for testing
+# In practice, use the full GRI-3.0 mechanism from Cantera
+
+phases:
+- name: gas
+  thermo: ideal-gas
+  kinetics: gas
+  species: [H2, O2, H2O, CO, CO2, CH4, N2, H, O, OH, HO2, H2O2, C2H6, C3H8, nC4H10, iC4H10, AR, HE]
+
+species:
+- name: H2
+  composition: {H: 2}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [2.34433112E+00, 7.98052075E-03, -1.94781510E-05, 2.01572094E-08, -7.37611761E-12, -9.17935173E+02, 6.83010238E-01]
+    - [3.33727920E+00, -4.94024731E-05, 4.99656770E-07, -1.79506194E-10, 2.00215276E-14, -9.50158922E+02, -3.20540831E+00]
+
+- name: O2
+  composition: {O: 2}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [3.28253784E+00, 1.48308754E-03, -7.57966669E-07, 2.09470555E-10, -2.16717794E-14, -1.08845772E+03, 5.45323129E+00]
+    - [3.28253784E+00, 1.48308754E-03, -7.57966669E-07, 2.09470555E-10, -2.16717794E-14, -1.08845772E+03, 5.45323129E+00]
+
+- name: H2O
+  composition: {H: 2, O: 1}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [3.03399249E+00, 2.17691804E-03, -1.64072518E-07, -9.70419870E-11, 1.68200992E-14, -3.02937267E+04, 4.96677010E+00]
+    - [4.19864056E+00, -2.03643410E-03, 6.52040211E-06, -5.48797062E-09, 1.77197817E-12, -3.02937267E+04, -8.49032208E-01]
+
+- name: CO
+  composition: {C: 1, O: 1}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [3.57953347E+00, -6.10353680E-04, 1.01681433E-06, 9.07005884E-10, -9.04424499E-13, -1.43440860E+04, 3.50840928E+00]
+    - [2.71518561E+00, 2.06252743E-03, -9.27562870E-07, 1.11272580E-10, -6.45354124E-15, -1.43440860E+04, 7.81868772E+00]
+
+- name: CO2
+  composition: {C: 1, O: 2}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [2.35677352E+00, 8.98459677E-03, -7.12356269E-06, 2.45919022E-09, -1.43699548E-13, -4.83719697E+04, 9.90105222E+00]
+    - [3.85746029E+00, 4.41437026E-03, -2.21481404E-06, 5.23490188E-10, -4.72084164E-14, -4.83719697E+04, 2.27163806E+00]
+
+- name: CH4
+  composition: {C: 1, H: 4}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [5.14987613E+00, -1.36709788E-02, 4.91800599E-05, -4.84743026E-08, 1.66693956E-11, -1.02466476E+04, -4.64130376E+00]
+    - [7.48514950E-02, 1.33909467E-02, -5.73285809E-06, 1.22292535E-09, -1.01815230E-13, -9.46834459E+03, 1.84373180E+01]
+
+- name: N2
+  composition: {N: 2}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [2.95237237E+00, 1.39690040E-03, -4.92631603E-07, 7.86010195E-11, -4.60755321E-15, -9.23948688E+02, 5.87188762E+00]
+    - [2.95237237E+00, 1.39690040E-03, -4.92631603E-07, 7.86010195E-11, -4.60755321E-15, -9.23948688E+02, 5.87188762E+00]
+
+- name: H
+  composition: {H: 1}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [2.50000000E+00, -2.30842973E-11, 1.61561948E-14, -4.73502035E-18, 4.90380380E-22, 2.54736599E+04, -4.46682853E-01]
+    - [2.50000000E+00, -2.30842973E-11, 1.61561948E-14, -4.73502035E-18, 4.90380380E-22, 2.54736599E+04, -4.46682853E-01]
+
+- name: O
+  composition: {O: 1}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [3.16826710E+00, -3.27931884E-03, 6.64306396E-06, -6.12806624E-09, 2.11265971E-12, 2.91222592E+04, 2.05193346E+00]
+    - [2.56942078E+00, -8.59741137E-05, 4.19484589E-08, -1.00177799E-11, 1.22833691E-15, 2.91222592E+04, 4.78433864E+00]
+
+- name: OH
+  composition: {H: 1, O: 1}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [3.09288767E+00, 5.48429716E-04, 1.26505228E-07, -8.79461556E-11, 1.17412376E-14, 3.85865700E+03, 4.47669610E+00]
+    - [3.09288767E+00, 5.48429716E-04, 1.26505228E-07, -8.79461556E-11, 1.17412376E-14, 3.85865700E+03, 4.47669610E+00]
+
+- name: HO2
+  composition: {H: 1, O: 2}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [4.01721090E+00, 2.23982013E-03, -6.33658150E-07, 1.14246370E-10, -1.07908535E-14, 1.11856713E+02, 3.78510215E+00]
+    - [4.01721090E+00, 2.23982013E-03, -6.33658150E-07, 1.14246370E-10, -1.07908535E-14, 1.11856713E+02, 3.78510215E+00]
+
+- name: H2O2
+  composition: {H: 2, O: 2}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [4.16500285E+00, 4.90831694E-03, -1.90139225E-06, 3.71185986E-10, -2.87908305E-14, -1.78617877E+04, 2.91615662E+00]
+    - [4.16500285E+00, 4.90831694E-03, -1.90139225E-06, 3.71185986E-10, -2.87908305E-14, -1.78617877E+04, 2.91615662E+00]
+
+- name: C2H6
+  composition: {C: 2, H: 6}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [4.29142492E+00, -5.50154270E-03, 1.82974107E-05, -1.86776287E-08, 6.96528530E-12, -1.15222055E+04, 1.35677152E+00]
+    - [1.07188150E+00, 2.16852677E-02, -1.00256067E-05, 2.54552107E-09, -2.29259200E-13, -1.15222055E+04, 1.51156107E+01]
+
+- name: C3H8
+  composition: {C: 3, H: 8}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [4.23776712E+00, -3.12778283E-03, 1.50883455E-05, -1.65856218E-08, 6.85441030E-12, -1.39599240E+04, 3.11516969E+00]
+    - [1.07188150E+00, 2.16852677E-02, -1.00256067E-05, 2.54552107E-09, -2.29259200E-13, -1.15222055E+04, 1.51156107E+01]
+
+- name: nC4H10
+  composition: {C: 4, H: 10}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [4.11393110E+00, -1.23964019E-03, 1.18964529E-05, -1.43167706E-08, 6.18448800E-12, -1.65979850E+04, 4.77265062E+00]
+    - [1.07188150E+00, 2.16852677E-02, -1.00256067E-05, 2.54552107E-09, -2.29259200E-13, -1.15222055E+04, 1.51156107E+01]
+
+- name: iC4H10
+  composition: {C: 4, H: 10}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [4.11393110E+00, -1.23964019E-03, 1.18964529E-05, -1.43167706E-08, 6.18448800E-12, -1.65979850E+04, 4.77265062E+00]
+    - [1.07188150E+00, 2.16852677E-02, -1.00256067E-05, 2.54552107E-09, -2.29259200E-13, -1.15222055E+04, 1.51156107E+01]
+
+- name: AR
+  composition: {AR: 1}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [2.50000000E+00, 0.00000000E+00, 0.00000000E+00, 0.00000000E+00, 0.00000000E+00, -7.45375000E+02, 4.37967491E+00]
+    - [2.50000000E+00, 0.00000000E+00, 0.00000000E+00, 0.00000000E+00, 0.00000000E+00, -7.45375000E+02, 4.37967491E+00]
+
+- name: HE
+  composition: {HE: 1}
+  thermo:
+    model: NASA7
+    temperature-ranges: [300.0, 1000.0, 5000.0]
+    data:
+    - [2.50000000E+00, 0.00000000E+00, 0.00000000E+00, 0.00000000E+00, 0.00000000E+00, -7.45375000E+02, 4.37967491E+00]
+    - [2.50000000E+00, 0.00000000E+00, 0.00000000E+00, 0.00000000E+00, 0.00000000E+00, -7.45375000E+02, 4.37967491E+00]
+
+reactions:
+- equation: H + O2 = O + OH
+  rate-constant: {A: 3.52e16, b: -0.7, Ea: 17013.0}
+  units: {length: cm, quantity: mol, time: s, energy: cal}
+
+- equation: O + H2 = H + OH
+  rate-constant: {A: 5.08e4, b: 2.67, Ea: 6290.0}
+  units: {length: cm, quantity: mol, time: s, energy: cal}
+
+- equation: OH + H2 = H2O + H
+  rate-constant: {A: 2.16e8, b: 1.51, Ea: 3430.0}
+  units: {length: cm, quantity: mol, time: s, energy: cal}
+
+- equation: OH + OH = O + H2O
+  rate-constant: {A: 3.57e4, b: 2.4, Ea: -2110.0}
+  units: {length: cm, quantity: mol, time: s, energy: cal}
+
+- equation: H + H + M = H2 + M
+  rate-constant: {A: 1.0e18, b: -1.0, Ea: 0.0}
+  units: {length: cm, quantity: mol, time: s, energy: cal}
+  efficiencies: {H2: 0.0, H2O: 0.0, CO: 0.75, CO2: 1.5, CH4: 2.0, C2H6: 3.0, C3H8: 3.0, nC4H10: 3.0, iC4H10: 3.0, AR: 0.0, HE: 0.0}
+
+- equation: H + OH + M = H2O + M
+  rate-constant: {A: 2.2e22, b: -2.0, Ea: 0.0}
+  units: {length: cm, quantity: mol, time: s, energy: cal}
+  efficiencies: {H2: 0.0, H2O: 0.0, CO: 0.75, CO2: 1.5, CH4: 2.0, C2H6: 3.0, C3H8: 3.0, nC4H10: 3.0, iC4H10: 3.0, AR: 0.0, HE: 0.0}
+
+- equation: CH4 + O2 = CH3 + HO2
+  rate-constant: {A: 5.0e13, b: 0.0, Ea: 50000.0}
+  units: {length: cm, quantity: mol, time: s, energy: cal}
+
+- equation: CH4 + H = CH3 + H2
+  rate-constant: {A: 6.6e8, b: 1.62, Ea: 10840.0}
+  units: {length: cm, quantity: mol, time: s, energy: cal}
+
+- equation: CH4 + OH = CH3 + H2O
+  rate-constant: {A: 1.0e8, b: 1.6, Ea: 3120.0}
+  units: {length: cm, quantity: mol, time: s, energy: cal}
+
+- equation: CO + OH = CO2 + H
+  rate-constant: {A: 4.4e6, b: 1.5, Ea: -373.0}
+  units: {length: cm, quantity: mol, time: s, energy: cal}
+
+- equation: CO + O2 = CO2 + O
+  rate-constant: {A: 2.5e12, b: 0.0, Ea: 47700.0}
+  units: {length: cm, quantity: mol, time: s, energy: cal}

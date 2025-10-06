@@ -1,0 +1,39 @@
+HP-POX PLANT VALIDATION SUMMARY
+==================================================
+
+TOLERANCES:
+  H2/CO ratio: ±5% (relative)
+  CH4 conversion: ±10 percentage points
+  CO2 conversion: ±5 percentage points
+  Ignition length: ±0.15 m or ±10%
+  Pressure drop: ±10%
+
+CASE RESULTS:
+
+CASE_A (Detailed):
+  CH4 conversion: 84.2%
+  H2/CO ratio: 2.25
+  Ignition length: 0.603 m
+  Pressure drop: 1.00 bar
+  Runtime: 2.50 s
+
+CASE_A (Reduced):
+  CH4 conversion: 77.7%
+  H2/CO ratio: 2.24
+  Ignition length: 0.665 m
+  Pressure drop: 1.00 bar
+  Runtime: 1.20 s
+
+CASE_B (Detailed):
+  CH4 conversion: 84.2%
+  H2/CO ratio: 2.25
+  Ignition length: 0.458 m
+  Pressure drop: 1.00 bar
+  Runtime: 3.00 s
+
+CASE_B (Reduced):
+  CH4 conversion: 77.7%
+  H2/CO ratio: 2.24
+  Ignition length: 0.637 m
+  Pressure drop: 1.00 bar
+  Runtime: 1.40 s

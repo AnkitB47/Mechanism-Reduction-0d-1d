@@ -1,0 +1,126 @@
+# HP-POX Plant Cases - Oxygen-Blown Configuration
+# Based on Richter et al. (Fuel 2015) benchmark specifications
+
+cases:
+  case_reference:
+    name: "Reference Case (CASE_A) - Baseline HP-POX"
+    description: "Baseline operating point for HP-POX validation"
+    
+    # Operating conditions
+    pressure_bar_g: 50.0
+    target_reactor_temp_C: 1200.0
+    residence_time_s: 15.5
+    
+    # Inlet streams (kg/h) - Oxygen-blown HP-POX
+    natural_gas_kgph: 1000.0
+    oxygen_kgph: 1200.0
+    primary_steam_kgph: 200.0
+    secondary_steam_kgph: 100.0
+    n2_optical_kgph: 5.0  # Minimal optical flush only
+    
+    # Temperatures (°C)
+    natural_gas_T_C: 400.0
+    oxygen_T_C: 300.0
+    primary_steam_T_C: 350.0
+    secondary_steam_T_C: 350.0
+    n2_T_C: 25.0
+    
+    # Natural gas composition (vol%) - Richter benchmark defaults
+    ng_composition:
+      CH4_volpct: 96.0
+      CO2_volpct: 0.35
+      C2H6_volpct: 2.25
+      C3H8_volpct: 0.45
+      nC4H10_volpct: 0.05
+      iC4H10_volpct: 0.06
+      N2_volpct: 0.85
+    
+    # Expected outlet composition (dry basis) - Richter reference
+    expected_outlet_dry:
+      H2_volpct: 48.0
+      CO_volpct: 24.0
+      CO2_volpct: 4.0
+      CH4_volpct: 3.5
+      N2_volpct: 0.6
+    
+    # Geometry
+    geometry: "plant_a"
+    
+    # Heat transfer
+    heat_transfer:
+      model: "fixed_wall_temp"
+      wall_temp_C: 140.0
+      heat_loss_fraction: 0.01
+
+  case_sensitivity:
+    name: "Sensitivity Case (CASE_B) - High Temperature HP-POX"
+    description: "High temperature operating point for sensitivity analysis"
+    
+    # Operating conditions - Higher temperature
+    pressure_bar_g: 60.0
+    target_reactor_temp_C: 1400.0
+    residence_time_s: 15.5
+    
+    # Inlet streams (kg/h) - Higher temperature case
+    natural_gas_kgph: 800.0
+    oxygen_kgph: 1000.0
+    primary_steam_kgph: 150.0
+    secondary_steam_kgph: 75.0
+    n2_optical_kgph: 4.0  # Minimal optical flush only
+    
+    # Temperatures (°C) - Higher inlet temperatures
+    natural_gas_T_C: 450.0
+    oxygen_T_C: 350.0
+    primary_steam_T_C: 400.0
+    secondary_steam_T_C: 400.0
+    n2_T_C: 25.0
+    
+    # Natural gas composition (vol%) - Same as reference
+    ng_composition:
+      CH4_volpct: 96.0
+      CO2_volpct: 0.35
+      C2H6_volpct: 2.25
+      C3H8_volpct: 0.45
+      nC4H10_volpct: 0.05
+      iC4H10_volpct: 0.06
+      N2_volpct: 0.85
+    
+    # Expected outlet composition (dry basis) - Richter sensitivity
+    expected_outlet_dry:
+      H2_volpct: 48.0
+      CO_volpct: 25.5
+      CO2_volpct: 4.0
+      CH4_volpct: 0.1
+      N2_volpct: 0.6
+    
+    # Geometry
+    geometry: "plant_b"
+    
+    # Heat transfer
+    heat_transfer:
+      model: "fixed_wall_temp"
+      wall_temp_C: 150.0
+      heat_loss_fraction: 0.012
+
+# Feed validation requirements
+feed_requirements:
+  oxygen_purity_min: 99.5  # %
+  no_air_allowed: true
+  dry_basis_exclude: ["H2O"]
+  wet_basis_include: ["H2O"]
+
+# KPI tolerances
+validation_tolerances:
+  h2_co_ratio_pct: 5.0  # ±5% relative
+  ch4_conversion_pp: 10.0  # ±10 percentage points
+  co2_conversion_pp: 5.0  # ±5 percentage points
+  ignition_length_m: 0.15  # ±0.15 m
+  ignition_length_pct: 10.0  # ±10% relative
+  pressure_drop_pct: 10.0  # ±10% relative
+
+# Reduction targets
+reduction_targets:
+  target_species: 60
+  max_error_pct: 5.0
+  validation_cases: ["case_reference", "case_sensitivity"]
+  priority_species: ["CH4", "O2", "H2", "CO", "CO2", "H2O", "N2"]

@@ -59,20 +59,22 @@ class InletConditions:
     oxygen_kgph: float
     primary_steam_kgph: float
     secondary_steam_kgph: float
-    n2_optical_kgph: float = 0.0
     
     # Temperatures (°C)
     natural_gas_T_C: float
     oxygen_T_C: float
     primary_steam_T_C: float
     secondary_steam_T_C: float
-    n2_T_C: float = 25.0
     
     # Pressure (bar gauge)
     pressure_bar_g: float
     
     # Natural gas composition (vol%)
     ng_composition: Dict[str, float]
+    
+    # Optional parameters with defaults
+    n2_optical_kgph: float = 0.0
+    n2_T_C: float = 25.0
 
 
 @dataclass
