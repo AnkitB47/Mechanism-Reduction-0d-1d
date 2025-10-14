@@ -1,0 +1,11 @@
+{
+  "H2_CO_out_avg": NaN,
+  "CH4_slip_pct_avg": NaN,
+  "T_out_avg": NaN,
+  "profile_rmse": {},
+  "per_case": {},
+  "feasibility_penalty": 0.0,
+  "mech_yaml": "/mnt/d/Thesis/Master_Thesis/runs/20251013_203528/gen_07/ind_019/cand_b4e443907e44/candidate.yaml",
+  "n_species": 29,
+  "n_reactions": 102
+}

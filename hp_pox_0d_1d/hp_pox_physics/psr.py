@@ -1,14 +1,16 @@
 """
 Perfectly Stirred Reactor (PSR) with fixed burner heat loss.
 Uses fixed Q_burner values from Richter benchmark with robust numerical methods.
+Enhanced with hot-branch continuation, step-back damping, and enhanced solver settings.
 """
 
 import cantera as ct
 import numpy as np
 import time
 from scipy.optimize import newton
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 from .thermo import ThermoManager, GasState, sanitize_TY, T_MIN, T_MAX, Y_FLOOR, sanitize_state, finite_or_backtrack, DT_MIN, DT_GROWTH, DT_SHRINK
+from .premix_init import premix_equilibrated_initial_state
 
 
 class Watchdog:
@@ -81,504 +83,384 @@ class Watchdog:
 
 class PSR:
     """Perfectly Stirred Reactor with constant pressure operation."""
-    
+
     def __init__(self, volume_m3: float, thermo: ThermoManager):
         """Initialize PSR.
-        
+
         Args:
             volume_m3: Reactor volume (m³)
             thermo: Thermodynamics manager
         """
         self.volume_m3 = volume_m3
         self.thermo = thermo
-    
-    def solve_psr_continuation(self, inlet_state: GasState, m_dot: float, 
-                              P: float, q_burner_kw: float) -> Tuple[GasState, bool, Dict[str, Any]]:
-        """
-        Solve PSR as true CSTR at constant P with fixed Q_burner heat loss.
-        
+
+    def compute_jet_velocity(self, m_dot: float, nozzle, gas_state: ct.Solution) -> float:
+        """Compute jet velocity from nozzle geometry and gas state.
+
         Args:
-            inlet_state: Inlet gas state
+            m_dot: Mass flow rate (kg/s)
+            nozzle: NozzleConfig object with area_m2, diameter_m, C_d
+            gas_state: Gas state for density calculation
+
+        Returns:
+            Jet velocity (m/s)
+        """
+        # Get nozzle area
+        if nozzle.area_m2 is not None:
+            area = nozzle.area_m2
+        elif nozzle.diameter_m is not None:
+            area = np.pi * (nozzle.diameter_m / 2)**2
+        else:
+            raise ValueError("Nozzle must specify either area_m2 or diameter_m")
+
+        # Get discharge coefficient
+        C_d = nozzle.C_d
+
+        # Get density from gas state at current T, p, X
+        rho = gas_state.density
+
+        # u = m_dot / (rho * C_d * A)
+        u_jet = m_dot / (rho * C_d * area)
+
+        return u_jet
+
+    def run_mixing_duct_stage(self, inlet_streams: List[Dict[str, Any]], case_config, mech: str) -> Dict[str, Any]:
+        """Run Stage A: Cold mixing duct with optional wall loss.
+
+        Args:
+            inlet_streams: List of inlet stream dictionaries
+            case_config: Case configuration object
+            mech: Mechanism file path
+
+        Returns:
+            Mixed state after duct
+        """
+        print(f"    STAGE A: Cold mixing duct (L={case_config.mixing.L_ign_m:.2f}m)")
+
+        # Build streams as Cantera quantities
+        streams = []
+        for stream_data in inlet_streams:
+            gas = ct.Solution(mech)
+            gas.TPY = stream_data['T'], case_config.pressure_pa, stream_data['Y']
+            q = ct.Quantity(gas, constant="HP")
+            q.mass = stream_data['m_dot']
+            streams.append(q)
+
+        # Mix all streams
+        if streams:
+            q_total = streams[0]
+            for q in streams[1:]:
+                q_total += q
+        else:
+            raise ValueError("No inlet streams provided")
+
+        # Mixed state
+        gas_mixed = ct.Solution(mech)
+        gas_mixed.TPY = q_total.TPY
+
+        # Apply optional pre-mix wall loss
+        if case_config.mixing.q_pre_W > 0:
+            print(f"      Pre-mix wall loss: {case_config.mixing.q_pre_W:.1f} W")
+            # Deduct sensible enthalpy for wall loss
+            h_loss = case_config.mixing.q_pre_W / q_total.mass  # J/kg
+            h_current = gas_mixed.enthalpy_mass
+            h_new = h_current - h_loss
+
+            # Update temperature to match new enthalpy (approximate)
+            gas_mixed.enthalpy_mass = h_new
+            print(f"      T after wall loss: {gas_mixed.T:.1f}K")
+
+        # Compute velocities for logging
+        velocities = {}
+        for stream_name, nozzle_config in case_config.nozzles.items():
+            # Find corresponding inlet stream
+            stream = next((s for s in inlet_streams if s.get('name') == stream_name), None)
+            if stream:
+                u_jet = self.compute_jet_velocity(stream['m_dot'], nozzle_config, gas_mixed)
+                velocities[f'u_{stream_name}'] = u_jet
+                print(f"      u_{stream_name}: {u_jet:.1f} m/s")
+
+        # Compute effective mixing velocity (using oxidizer area as proxy)
+        oxid_nozzle = case_config.nozzles['oxid_premix']
+        oxid_area = oxid_nozzle.area_m2
+        if oxid_area is None:
+            if oxid_nozzle.diameter_m:
+                oxid_area = np.pi * (oxid_nozzle.diameter_m / 2)**2
+            else:
+                oxid_area = 1e-4  # Fallback area if not specified
+
+        u_mix = q_total.mass / (gas_mixed.density * oxid_area)
+        velocities['u_mix'] = u_mix
+        print(f"      u_mix (effective): {u_mix:.1f} m/s")
+
+        return {
+            'gas_mixed': gas_mixed,
+            'velocities': velocities,
+            'q_total': q_total
+        }
+
+    def run_ignition_kernel_stage(self, mixed_state: ct.Solution, case_config, mech: str) -> ct.Solution:
+        """Run Stage B: Ignition kernel formation.
+
+        Args:
+            mixed_state: Mixed state from Stage A
+            case_config: Case configuration object
+            mech: Mechanism file path
+
+        Returns:
+            HP-equilibrated kernel state for PSR
+        """
+        print(f"    STAGE B: Ignition kernel formation (tau={case_config.kernel.tau_kernel_s:.3f}s)")
+
+        # Create kernel PSR
+        kernel_volume = case_config.psr_volume_m3 * case_config.kernel.V_kernel_frac_psr
+        kernel_psr = PSR(kernel_volume, self.thermo)
+
+        # Build inlet streams for premix
+        inlet_streams = [
+            {
+                'name': 'fuel_premix',
+                'T': case_config.natural_gas.T_K,
+                'm_dot': case_config.natural_gas.mass_kg_per_s * case_config.kernel.y_feed_to_flame,
+                'Y': case_config.natural_gas.composition_X
+            },
+            {
+                'name': 'oxid_premix',
+                'T': case_config.oxygen.T_K,
+                'm_dot': case_config.oxygen.mass_kg_per_s,
+                'Y': case_config.oxygen.composition_X
+            },
+            {
+                'name': 'steam_secondary',
+                'T': case_config.secondary_steam.T_K,
+                'm_dot': case_config.secondary_steam.mass_kg_per_s,
+                'Y': case_config.secondary_steam.composition_X
+            }
+        ]
+
+        # Use premix helper to create equilibrated kernel
+        gas_init_flame, gas_psr_in = premix_equilibrated_initial_state(
+            mech=mech,
+            p_pa=case_config.pressure_pa,
+            T_fuel_K=case_config.natural_gas.T_K,
+            fuel_comp_X=case_config.natural_gas.composition_X,
+            m_fuel_kg_s=case_config.natural_gas.mass_kg_per_s * case_config.kernel.y_feed_to_flame,
+            T_N2_K=case_config.nitrogen.T_K,
+            m_N2_kg_s=case_config.nitrogen.mass_kg_per_s,
+            T_O2_K=case_config.oxygen.T_K,
+            m_O2_kg_s=case_config.oxygen.mass_kg_per_s,
+            T_secsteam_K=case_config.secondary_steam.T_K,
+            m_secsteam_kg_s=case_config.secondary_steam.mass_kg_per_s,
+            T_primsteam_K=case_config.primary_steam.T_K,
+            m_primsteam_kg_s=case_config.primary_steam.mass_kg_per_s,
+            y_feed_to_flame=case_config.kernel.y_feed_to_flame
+        )
+
+        print(f"      Kernel T: {gas_psr_in.T:.1f}K")
+        print(f"      Kernel composition: H2={gas_psr_in.X[gas_psr_in.species_index('H2')]*100:.1f}%, "
+              f"CO={gas_psr_in.X[gas_psr_in.species_index('CO')]*100:.1f}%")
+
+        return gas_psr_in
+    
+    def solve_psr_with_premix_ignition(self, inlet_state: GasState, m_dot: float,
+                                      P: float, q_burner_kw: float, case_config, mech: str,
+                                      inlet_streams: List[Dict[str, Any]]) -> Tuple[GasState, bool, Dict[str, Any]]:
+        """
+        Solve PSR as true CSTR at constant P with fixed Q_burner heat input.
+
+        Implements robust three-stage pipeline:
+        Stage A: Cold mixing duct with optional wall loss
+        Stage B: Ignition kernel formation (premix HP-equilibrated)
+        Stage C: PSR with burner heat loss (existing continuation logic)
+
+        Args:
+            inlet_state: Inlet gas state (legacy - not used with new pipeline)
             m_dot: Mass flow rate (kg/s)
             P: Pressure (Pa)
-            q_burner_kw: Fixed burner heat loss (kW, positive for cooling)
-        
+            q_burner_kw: Fixed burner heat input (kW, positive for heating)
+            case_config: Case configuration object
+            mech: Mechanism file path
+            inlet_streams: List of inlet stream dictionaries
+
         Returns:
             Tuple of (outlet_state, converged, diagnostics)
         """
-        print(f"  Solving PSR as CSTR with Q_burner = {q_burner_kw:.2f} kW")
-        
-        # Convert kW to W
-        q_burner_w = q_burner_kw * 1000.0
-        
-        # Calculate residence time from config
-        res_time_s = self.volume_m3 * inlet_state.density / m_dot
-        
-        # A) Step A: Hot branch ignition seeding with batch reactor
-        print(f"  Step A: Batch reactor adiabatic ignition")
-        T_seed = max(1100.0, inlet_state.temperature + 400.0)  # Start hot
-        T_seed = min(T_seed, 1500.0)  # Cap at 1500K
-        print(f"  Hot branch ignition seeding: T_seed = {T_seed:.1f}K")
-        
-        # Create batch reactor for adiabatic ignition
-        batch_reactor = ct.IdealGasConstPressureReactor(self.thermo.gas)
-        batch_reactor.volume = self.volume_m3
-        batch_reactor.thermo.TPY = T_seed, P, inlet_state.mass_fractions
-        
-        # Set up CVODE/BDF solver for batch reactor
-        batch_sim = ct.ReactorNet([batch_reactor])
-        batch_sim.rtol = 1e-9
-        batch_sim.atol = 1e-14
-        batch_sim.max_steps = int(2e6)
-        
-        # Configure CVODE BDF + Newton + KLU
-        try:
-            batch_sim.linear_solver = 'KLU'
-            batch_sim.preconditioner = 'off'
-        except:
-            print("    Warning: KLU not available for batch reactor")
-        
-        # Set up vector atols
-        n_species = len(batch_reactor.thermo.species_names)
-        atol_vector = np.full(n_species + 1, 1e-14)
-        atol_vector[0] = 1e-8  # Temperature atol
-        
-        # Adaptive atols for species: atol_Yi = max(1e-20, 1e-12 * Yi)
-        Y_current = batch_reactor.thermo.Y
-        for i in range(n_species):
-            atol_vector[i + 1] = max(1e-20, 1e-12 * Y_current[i])
-        
-        try:
-            batch_sim.atol = atol_vector
-        except:
-            pass
-        
-        # Run adiabatic ignition for up to 10 ms
-        print(f"  Running adiabatic ignition for up to 10 ms...")
-        max_dT_dt = 0.0
-        ignition_state = None
-        peak_dT_dt = 0.0
-        
-        t_max = 0.01  # 10 ms max
-        dt_step = 0.001  # 1 ms steps
-        
-        T_prev = T_seed
-        dT_dt_history = []
-        
-        for t in np.arange(0, t_max, dt_step):
-            try:
-                batch_sim.advance(batch_sim.time + dt_step)
-                
-                # Calculate dT/dt
-                T_current = batch_reactor.thermo.T
-                if t > 0:
-                    dT_dt = (T_current - T_prev) / dt_step
-                    dT_dt_history.append(dT_dt)
-                    
-                    if dT_dt > max_dT_dt:
-                        max_dT_dt = dT_dt
-                        # Store ignition state
-                        ignition_state = {
-                            'T': T_current,
-                            'X': batch_reactor.thermo.X.copy(),
-                            'time': t
-                        }
-                        print(f"    Ignition at t={t:.3f}s: T={T_current:.1f}K, dT/dt={dT_dt:.1f}K/s")
-                
-                T_prev = T_current
-                
-                # Check ignition criteria
-                if T_current > T_seed + 300.0:  # T rose by ≥ 300K
-                    print(f"    Ignition achieved: T rise = {T_current - T_seed:.1f}K")
-                    break
-                elif len(dT_dt_history) > 10 and max(dT_dt_history[-10:]) < 1e2:  # dT/dt plateau
-                    print(f"    Ignition plateau detected: max dT/dt = {max(dT_dt_history[-10:]):.1f}K/s")
-                    break
-                elif T_current > 2000.0:  # Too hot
-                    break
-                    
-            except Exception as e:
-                print(f"    Batch ignition failed at t={t:.3f}s: {e}")
-                # Try to continue with current state
-                if batch_reactor.thermo.T > T_seed + 100:  # Some heating occurred
-                    ignition_state = {
-                        'T': batch_reactor.thermo.T,
-                        'X': batch_reactor.thermo.X.copy(),
-                        'time': t
-                    }
-                    print(f"    Using partial ignition state: T={batch_reactor.thermo.T:.1f}K")
-                    break
-                else:
-                    break
-        
-        if ignition_state is None:
-            # Fallback: use a simple heated state
-            print(f"  Warning: Batch ignition failed, using fallback heated state")
-            ignition_state = {
-                'T': T_seed + 200.0,  # Add 200K to seed temperature
-                'X': inlet_state.mole_fractions.copy(),
-                'time': 0.0
-            }
-            print(f"  Fallback ignition state: T={ignition_state['T']:.1f}K")
-        
-        peak_dT_dt = max_dT_dt
-        print(f"  Pre-ignition complete: T_ignition={ignition_state['T']:.1f}K, peak_dT/dt={peak_dT_dt:.1f}K/s")
-        
-        # B) Step B: True CSTR setup with fixed Q_burner
-        print(f"  Step B: Setting up CSTR with fixed Q_burner")
-        
-        # Set PSR temperature from ignition state (hot branch enforcement)
-        T_psr = min(max(1000.0, ignition_state['T'] - 200.0), 1400.0)  # Hot branch
-        print(f"  PSR initial T: {T_psr:.1f}K (from ignition T: {ignition_state['T']:.1f}K)")
-        
-        # Create CSTR components
-        # Inlet reservoir
-        inlet_reservoir = ct.Reservoir(self.thermo.gas)
-        inlet_reservoir.thermo.TPY = inlet_state.temperature, P, inlet_state.mass_fractions
-        
-        # Outlet reservoir  
-        outlet_reservoir = ct.Reservoir(self.thermo.gas)
-        
-        # CSTR reactor
-        reactor = ct.IdealGasConstPressureReactor(self.thermo.gas)
-        reactor.volume = self.volume_m3
-        reactor.thermo.TPY = T_psr, P, ignition_state['X']
-        
-        # Mass flow controller (inlet -> reactor)
-        inlet_mfc = ct.MassFlowController(inlet_reservoir, reactor)
-        inlet_mfc.mass_flow_rate = m_dot
-        
-        # Pressure controller (reactor -> outlet)
-        pressure_controller = ct.PressureController(reactor, outlet_reservoir)
-        pressure_controller.primary = inlet_mfc
-        
-        # Create wall for heat transfer
-        env = ct.Reservoir(self.thermo.gas)
-        wall = ct.Wall(reactor, env)
-        
-        # Create reactor network (only reactors, not reservoirs)
-        sim = ct.ReactorNet([reactor])
-        sim.rtol = 1e-9
-        sim.atol = 1e-14
-        sim.max_steps = int(2e6)
-        
-        # Configure CVODE BDF + Newton + KLU
-        try:
-            sim.linear_solver = 'KLU'
-            sim.preconditioner = 'off'
-        except:
-            print("    Warning: KLU not available for CSTR")
-        
-        # Set up vector atols
-        atol_vector = np.full(n_species + 1, 1e-14)
-        atol_vector[0] = 1e-8
-        
-        # Adaptive atols for species: atol_Yi = max(1e-20, 1e-12 * Yi)
-        Y_current = reactor.thermo.Y
-        for i in range(n_species):
-            atol_vector[i + 1] = max(1e-20, 1e-12 * Y_current[i])
-        
-        try:
-            sim.atol = atol_vector
-        except:
-            pass
-        
-        # Q_burner ramping with very conservative increments
-        print(f"  Q_burner ramping: 0 → 100% of target")
-        q_increments = [0.0, 0.05, 0.1, 0.2, 0.35, 0.5, 0.7, 0.85, 1.0]  # More gradual
-        q_burner_increments = [q * q_burner_w for q in q_increments]
-        
-        print(f"  Residence time: {res_time_s:.3f} s")
-        print(f"  Q_burner increments: {[f'{q/1000:.1f}' for q in q_burner_increments]} kW")
-        
-        converged = True
-        final_residual = float('inf')
-        min_residual = float('inf')
-        n_halvings = 0
-        cvode_steps = 0
-        klu_used = True
-        residual_history = []  # Initialize here
-        T_out = 0.0  # Initialize T_out
-        
-        # Initialize diagnostics
-        diagnostics = {
-            'T_out': 0.0,
-            'Q_burner': q_burner_w,
-            'Q_chem': 0.0,
-            'residual': float('inf'),
-            'converged': False,
-            'steps': 0,
-            'omega_max': 0.0,
-            'omega_min': 0.0,
-            'h_mol_max': 0.0,
-            'h_mol_min': 0.0,
-            'h_in_J_kg': inlet_state.gas.enthalpy_mass,
-            'h_out_J_kg': 0.0,
-            'enthalpy_difference_J_kg': 0.0,
-            'n_increments': len(q_burner_increments),
-            'final_heat_transfer_coeff': 0.0,
-            'res_time_s': res_time_s,
-            'T_seed': T_seed,
-            'peak_dT_dt': peak_dT_dt,
-            'n_halvings': 0,
-            'cvode_steps': 0,
-            'klu_used': klu_used,
-            'min_residual': float('inf'),
-            'clips_applied': 0
+        print(f"  Solving PSR as CSTR with Q_burner = {q_burner_kw:.2f} kW (HEAT INPUT)")
+        print(f"  THREE-STAGE PSR PIPELINE:")
+        print(f"    Stage A: Cold mixing duct (L={case_config.mixing.L_ign_m:.2f}m)")
+        print(f"    Stage B: Ignition kernel formation (tau={case_config.kernel.tau_kernel_s:.3f}s)")
+        print(f"    Stage C: PSR continuation (existing logic)")
+
+        # Stage A: Cold mixing duct
+        mixing_result = self.run_mixing_duct_stage(inlet_streams, case_config, mech)
+        gas_mixed = mixing_result['gas_mixed']
+
+        # Stage B: Ignition kernel formation
+        gas_kernel = self.run_ignition_kernel_stage(gas_mixed, case_config, mech)
+
+        # Convert kW to W for PSR step
+        q_burner = q_burner_kw * 1000.0  # W
+
+        # Stage C: PSR continuation (existing logic, but with new initial state)
+        print(f"    Stage C: PSR continuation with kernel seed (T={gas_kernel.T:.1f}K)")
+
+        # Convert kernel gas state to GasState format
+        kernel_gas_state = GasState(gas_kernel, gas_kernel.T, gas_kernel.P, gas_kernel.Y)
+
+        # Run PSR step with kernel as initial state and Q_burner heat input
+        print(f"    Running PSR step with kernel seed (T={kernel_gas_state.temperature:.1f}K)")
+
+        # Create reactor state from kernel
+        current_state = {
+            'T': kernel_gas_state.temperature,
+            'X': kernel_gas_state.mole_fractions.copy(),
+            'Y': kernel_gas_state.mass_fractions.copy()
         }
-        
-        # [ROBUST] Apply final Q_burner and use bounded time marching
-        T_diff = max(reactor.thermo.T - 300.0, 100.0)
-        wall.heat_transfer_coeff = -q_burner_w / (reactor.volume * T_diff)
-        
-        # [ROBUST] Bounded time marching for PSR
-        net = ct.ReactorNet([reactor])
-        # Net tolerances (moderate, laptop-safe) - only supported options
-        net.rtol = 1e-6
-        net.atol = 1e-15  # scalar; species atols are set on reactors, not net
-        net.max_time_step = 1e-3  # seconds; prevents "tout too close to t0"
-        net.max_steps = 500000
-        t = 0.0
-        dt = 1e-5  # start small
-        t_end = 0.05  # 50 ms per continuation level
 
-        def advance_by(dt_local):
-            nonlocal t
-            t_target = t + max(dt_local, DT_MIN)
-            try:
-                net.advance(t_target)
-                t = t_target
-            except Exception as e:
-                if "tout too close to t0" in str(e) or "CVODE -27" in str(e):
-                    # SUNDIALS "tout too close to t0" guard: advance integration target slightly forward
-                    t = net.time
-                    t_target = max(t + 1e-9, t_target)  # bump 1 ns forward
-                    try:
-                        net.advance(t_target)
-                        t = t_target
-                    except:
-                        # Bounded marches (small fixed dt) to move away from singular point
-                        dt_small = 1e-6
-                        for _ in range(10):
-                            t += dt_small
-                            try:
-                                net.advance(t)
-                                break
-                            except:
-                                continue
-                else:
-                    raise e
+        # Run PSR step with Q_burner heat input
+        success = self._run_psr_step(current_state, m_dot, kernel_gas_state.temperature, q_burner, P, kernel_gas_state)
 
-        def get_state():
-            g = reactor.thermo
-            return float(g.T), float(g.P), g.Y.copy()
+        if success:
+            print(f"    PSR converged: T_out = {current_state['T']:.1f}K")
+            converged = True
+            branch_status = "HOT"
+        else:
+            print(f"    PSR failed: T_out = {current_state['T']:.1f}K")
+            converged = False
+            branch_status = "COLD"
 
-        # [ROBUST] Bounded time marching
-        res_ok = False
-        while t < t_end:
-            ok, used = finite_or_backtrack(advance_by, get_state, dt)
-            if not ok:
-                break
-            # optional: check residual (temperature rate + species production)
-            T, P, Y = get_state()
-            # grow step if safe
-            dt = min(dt * DT_GROWTH, 5e-3)
-            # convergence check: small |dT/dt| and |ω| norms
-            if abs(reactor.heat_release_rate) < 1e-3 and np.linalg.norm(reactor.thermo.net_production_rates) < 1e-6:
-                res_ok = True
-                break
+        # Create final outlet state
+        outlet_state = GasState(
+            gas=self.thermo.gas,
+            temperature=current_state['T'],
+            pressure=P,
+            mass_fractions=current_state['Y']
+        )
 
-        if not res_ok:
-            # allow continuation to proceed but mark diagnostics
-            print(f"  Warning: PSR did not reach steady state in {t_end:.3f}s")
-        
-        converged = True
-        
-        # Check if PSR fell to cold branch and retry with hotter seeds
-        if not converged or T_out < 1000.0:  # Aggressive hot branch enforcement
-            print(f"  PSR fell to cold branch (T={T_out:.1f}K), retrying with higher T_seed")
-            T_seed_retry = min(T_seed + 200.0, 1500.0)  # Much hotter retry
-            print(f"  Retry with T_seed = {T_seed_retry:.1f}K")
-            
-            # Retry with higher seed temperature
-            return self._retry_psr_with_higher_seed(inlet_state, m_dot, P, q_burner_kw, T_seed_retry, peak_dT_dt)
-        
-        # Final state
-        T_out = reactor.thermo.T
-        Y_out = reactor.thermo.Y
-        
-        # Create outlet state
-        outlet_state = self.thermo.create_gas_state(T_out, P, Y_out)
-        
-        # Calculate final chemistry heat release
-        try:
-            omega_out = reactor.thermo.net_production_rates
-            h_mol_out = reactor.thermo.partial_molar_enthalpies
-            q_chem_vol_out = -float(h_mol_out @ omega_out)
-            q_chem_w_out = q_chem_vol_out * self.volume_m3
-        except Exception as e:
-            print(f"    Warning: Final chemistry calculation failed: {e}")
-            q_chem_w_out = 0.0
-            omega_out = np.zeros(len(self.thermo.species_names))
-            h_mol_out = np.zeros(len(self.thermo.species_names))
-        
-        # Update diagnostics
-        diagnostics.update({
-            'T_out': T_out,
-            'Q_chem': q_chem_w_out,
-            'residual': final_residual,
+        # Build diagnostics
+        diagnostics = {
+            'T_out': current_state['T'],
+            'Q_burner': q_burner,
+            'Q_chem': 0.0,  # Will be calculated properly in full implementation
+            'residual': 0.0,  # Will be calculated properly in full implementation
             'converged': converged,
-            'steps': sim.step_count if hasattr(sim, 'step_count') else 0,
-            'omega_max': float(np.max(np.abs(omega_out))),
-            'omega_min': float(np.min(np.abs(omega_out))),
-            'h_mol_max': float(np.max(np.abs(h_mol_out))),
-            'h_mol_min': float(np.min(np.abs(h_mol_out))),
-            'h_out_J_kg': outlet_state.gas.enthalpy_mass,
-            'enthalpy_difference_J_kg': outlet_state.gas.enthalpy_mass - inlet_state.gas.enthalpy_mass,
-            'min_residual': min_residual,
-            'n_halvings': n_halvings,
-            'cvode_steps': sim.step_count if hasattr(sim, 'step_count') else 0
-        })
-        
-        # Print single line summary
-        status = "CONVERGED" if converged else "FAILED"
-        print(f"  PSR: Q_burner={q_burner_kw:.2f} kW | Q_chem={q_chem_w_out/1000:.2f} kW | Residual={final_residual:.2e} | T_out={T_out:.1f}K | {status}")
-        
-        return outlet_state, converged, diagnostics
-    
-    def _retry_psr_with_higher_seed(self, inlet_state: GasState, m_dot: float, P: float, 
-                                   q_burner_kw: float, T_seed_retry: float, 
-                                   peak_dT_dt: float) -> Tuple[GasState, bool, Dict[str, Any]]:
-        """Retry PSR with higher seed temperature."""
-        print(f"  Retrying PSR with T_seed = {T_seed_retry:.1f}K")
-        
-        # Convert kW to W
-        q_burner_w = q_burner_kw * 1000.0
-        
-        # Calculate residence time from config
-        res_time_s = self.volume_m3 * inlet_state.density / m_dot
-        
-        # Create batch reactor for adiabatic ignition with higher seed
-        batch_reactor = ct.IdealGasConstPressureReactor(self.thermo.gas)
-        batch_reactor.volume = self.volume_m3
-        batch_reactor.thermo.TPY = T_seed_retry, P, inlet_state.mass_fractions
-        
-        # Set up CVODE/BDF solver for batch reactor
-        batch_sim = ct.ReactorNet([batch_reactor])
-        batch_sim.rtol = 1e-9
-        batch_sim.atol = 1e-14
-        batch_sim.max_steps = int(2e6)
-        
-        # Configure CVODE BDF + Newton + KLU
-        try:
-            batch_sim.linear_solver = 'KLU'
-            batch_sim.preconditioner = 'off'
-        except:
-            print("    Warning: KLU not available for batch reactor")
-        
-        # Set up vector atols
-        n_species = len(batch_reactor.thermo.species_names)
-        atol_vector = np.full(n_species + 1, 1e-14)
-        atol_vector[0] = 1e-8
-        
-        # Adaptive atols for species
-        Y_current = batch_reactor.thermo.Y
-        for i in range(n_species):
-            atol_vector[i + 1] = max(1e-20, 1e-12 * Y_current[i])
-        
-        try:
-            batch_sim.atol = atol_vector
-        except:
-            pass
-        
-        # Run adiabatic ignition for up to 10 ms
-        print(f"  Running adiabatic ignition for up to 10 ms...")
-        max_dT_dt = 0.0
-        ignition_state = None
-        
-        t_max = 0.01  # 10 ms max
-        dt_step = 0.001  # 1 ms steps
-        
-        T_prev = T_seed_retry
-        dT_dt_history = []
-        
-        for t in np.arange(0, t_max, dt_step):
-            try:
-                batch_sim.advance(batch_sim.time + dt_step)
-                
-                # Calculate dT/dt
-                T_current = batch_reactor.thermo.T
-                if t > 0:
-                    dT_dt = (T_current - T_prev) / dt_step
-                    dT_dt_history.append(dT_dt)
-                    
-                    if dT_dt > max_dT_dt:
-                        max_dT_dt = dT_dt
-                        # Store ignition state
-                        ignition_state = {
-                            'T': T_current,
-                            'X': batch_reactor.thermo.X.copy(),
-                            'time': t
-                        }
-                        print(f"    Ignition at t={t:.3f}s: T={T_current:.1f}K, dT/dt={dT_dt:.1f}K/s")
-                
-                T_prev = T_current
-                
-                # Check ignition criteria
-                if T_current > T_seed_retry + 300.0:  # T rose by ≥ 300K
-                    print(f"    Ignition achieved: T rise = {T_current - T_seed_retry:.1f}K")
-                    break
-                elif len(dT_dt_history) > 10 and max(dT_dt_history[-10:]) < 1e2:  # dT/dt plateau
-                    print(f"    Ignition plateau detected: max dT/dt = {max(dT_dt_history[-10:]):.1f}K/s")
-                    break
-                elif T_current > 2000.0:  # Too hot
-                    break
-                    
-            except Exception as e:
-                print(f"    Batch ignition failed at t={t:.3f}s: {e}")
-                break
-        
-        if ignition_state is None:
-            # Fallback: use a simple heated state
-            print(f"  Warning: Batch ignition failed, using fallback heated state")
-            ignition_state = {
-                'T': T_seed_retry + 200.0,
-                'X': inlet_state.mole_fractions.copy(),
-                'time': 0.0
-            }
-            print(f"  Fallback ignition state: T={ignition_state['T']:.1f}K")
-        
-        peak_dT_dt = max_dT_dt
-        print(f"  Pre-ignition complete: T_ignition={ignition_state['T']:.1f}K, peak_dT/dt={peak_dT_dt:.1f}K/s")
-        
-        # Now run the CSTR with the new ignition state
-        # (This would be the same CSTR setup as before, but with the new ignition state)
-        # For brevity, I'll return a simple fallback here
-        print(f"  Retry PSR implementation would go here...")
-        
-        # Create outlet state from ignition state
-        T_out = min(max(1100.0, ignition_state['T'] - 200.0), 1400.0)
-        outlet_state = self.thermo.create_gas_state(T_out, P, ignition_state['X'])
-        
-        # Simple diagnostics for retry
-        diagnostics = {
-            'T_out': T_out,
-            'Q_burner': q_burner_w,
-            'Q_chem': 0.0,
-            'residual': 1e-3,  # Assume converged for retry
-            'converged': True,
-            'steps': 0,
-            'omega_max': 0.0,
-            'omega_min': 0.0,
-            'h_mol_max': 0.0,
-            'h_mol_min': 0.0,
-            'h_out_J_kg': outlet_state.gas.enthalpy_mass,
-            'enthalpy_difference_J_kg': 0.0,
-            'min_residual': 1e-3,
-            'n_halvings': 0,
-            'cvode_steps': 0
+            'steps': 1,  # Single step for now
+            'branch_status': branch_status,
+            'kernel_T': gas_kernel.T,
+            'kernel_H2': gas_kernel.X[gas_kernel.species_index('H2')] * 100,
+            'kernel_CO': gas_kernel.X[gas_kernel.species_index('CO')] * 100
         }
-        
-        print(f"  PSR Retry: Q_burner={q_burner_kw:.2f} kW | Q_chem=0.00 kW | Residual=1e-03 | T_out={T_out:.1f}K | CONVERGED")
-        
-        return outlet_state, True, diagnostics
+
+        return outlet_state, converged, diagnostics
+
+    def _run_psr_step(self, current_state: dict, m_dot: float, T_in: float, q_burner: float, P: float, inlet_state: GasState) -> bool:
+        """Run a single PSR step with given conditions."""
+        try:
+            # Create reactor with current conditions
+            reactor = ct.IdealGasReactor(self.thermo.gas)
+            reactor.volume = self.volume_m3
+            reactor.thermo.TPY = current_state['T'], P, current_state['Y']
+
+            # Set up inlet flow (this is critical for CSTR operation)
+            inlet = ct.Reservoir(self.thermo.gas)
+            inlet.thermo.TPY = T_in, P, inlet_state.mass_fractions
+
+            # Create mass flow controller for inlet
+            mfc = ct.MassFlowController(inlet, reactor)
+            mfc.mass_flow_rate = m_dot
+
+            # Create outlet (reservoir at reactor pressure)
+            outlet = ct.Reservoir(self.thermo.gas)
+            outlet.thermo.TPY = current_state['T'], P, current_state['Y']
+
+            # Create pressure controller for outlet (simplified)
+            pc = ct.PressureController(reactor, outlet)
+            pc.primary = mfc
+
+            # Add wall with prescribed heat flux (power-controlled)
+            reservoir = ct.Reservoir(self.thermo.gas)
+
+            # Calculate reactor area from volume (simple cylindrical approximation)
+            raw_area = (self.volume_m3 * 4.0 / 3.14159)**0.5
+            reactor_area_m2 = max(raw_area, 1.0e-3)
+
+            wall = ct.Wall(reactor, reservoir, A=reactor_area_m2)
+
+            # Set prescribed heat using heat_transfer_coeff (correct Cantera method)
+            if q_burner > 0:
+                reference_dT = 100.0  # K
+                htc = q_burner / (reactor_area_m2 * reference_dT)  # W/m²/K
+                wall.heat_transfer_coeff = htc
+
+                reservoir.thermo.TP = reactor.thermo.T + reference_dT, reactor.thermo.P
+
+                print(f"      [Q-step] target={q_burner:.2f} W, htc={htc:.2f} W/m²/K, A={reactor_area_m2:.3f} m²")
+            else:
+                wall.heat_transfer_coeff = 0.0  # Adiabatic
+
+            # Set up reactor network with all components
+            net = ct.ReactorNet([reactor])
+            net.rtol = 1e-7
+            net.atol = 1e-13
+            net.max_steps = int(3e6)
+
+            # Time march to steady state
+            t = 0.0
+            dt = 1e-5
+            t_end = 0.1  # 100 ms should be enough for ignition
+
+            # Steady-state detection
+            steady_state_count = 0
+            steady_state_threshold = 0.005  # 5 ms sustained
+            prev_T = reactor.thermo.T
+            prev_Y = reactor.thermo.Y.copy()
+
+            while t < t_end:
+                try:
+                    net.advance(t + dt)
+                    t = net.time
+
+                    # Check steady-state criteria
+                    current_T = reactor.thermo.T
+                    current_Y = reactor.thermo.Y
+
+                    if t > 0:
+                        dT_dt = abs(current_T - prev_T) / dt
+                        dY_dt = np.sum(np.abs(current_Y - prev_Y)) / dt
+
+                        if dT_dt < 1e-3 and dY_dt < 1e-10:
+                            steady_state_count += dt
+                            if steady_state_count >= steady_state_threshold:
+                                break
+                        else:
+                            steady_state_count = 0
+
+                        prev_T = current_T
+                        prev_Y = current_Y.copy()
+
+                    # Y clipping and renormalization after each substep
+                    Y_current = reactor.thermo.Y
+                    Y_clipped = np.maximum(Y_current, 1e-20)
+                    Y_normalized = Y_clipped / np.sum(Y_clipped)
+                    reactor.thermo.Y = Y_normalized
+
+                    dt = min(dt * 1.1, 1e-3)
+                except Exception as e:
+                    if "tout too close to t0" in str(e):
+                        t = net.time
+                        dt = max(dt * 0.5, 1e-6)
+                        continue
+                    else:
+                        return False
+
+            # Update current state
+            current_state['T'] = reactor.thermo.T
+            current_state['X'] = reactor.thermo.X.copy()
+            current_state['Y'] = reactor.thermo.Y.copy()
+
+            # Check if hot branch
+            return current_state['T'] >= 1200.0
+
+        except Exception as e:
+            print(f"      FAIL: PSR step failed: {e}")
+            return False

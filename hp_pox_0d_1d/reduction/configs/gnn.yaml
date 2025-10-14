@@ -1,0 +1,6 @@
+model:
+  type: stub
+train:
+  epochs: 1
+  batch_size: 64
+  lr: 1e-3

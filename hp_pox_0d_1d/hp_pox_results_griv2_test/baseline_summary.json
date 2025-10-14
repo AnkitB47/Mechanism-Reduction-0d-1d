@@ -1,0 +1,12 @@
+[
+  {
+    "case": "A_case1_richter",
+    "psr_converged": false,
+    "psr_t_out": 0.0,
+    "psr_branch": "FAILED",
+    "ch4_slip_pct": 0.0,
+    "h2_co_ratio": 0.0,
+    "t_out_avg": 0.0,
+    "error": "PSR physics bounds violation for case A_case1_richter: PHYSICS_BOUND_VIOLATION in A_case1_richter: T_out=1800.0K > T_ad+30K=1434.3K (T_ad=1404.3K, violation=365.7K)"
+  }
+]

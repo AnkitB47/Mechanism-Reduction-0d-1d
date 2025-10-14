@@ -44,11 +44,42 @@ def plot_temperature(df: pd.DataFrame, out_dir: Path):
         T = df['T_C'] + 273.15
     plt.figure(figsize=(10, 6))
     plt.plot(z, T, label='T (K)', color='tab:red')
+
+    # Add target temperature markers
+    if 'case1' in str(out_dir).lower():
+        target_T = 1201 + 273.15  # Case 1 target
+        plt.axhline(y=target_T, color='red', linestyle='--', alpha=0.7, label=f'Target: {target_T:.1f}K')
+    elif 'case4' in str(out_dir).lower():
+        target_T = 1401 + 273.15  # Case 4 target
+        plt.axhline(y=target_T, color='red', linestyle='--', alpha=0.7, label=f'Target: {target_T:.1f}K')
+
+    # Add kernel temperature marker at z=0
+    kernel_T = 3000  # Default - should be read from diagnostics
+    try:
+        # Try to read kernel temperature from diagnostics
+        import json
+        diag_file = out_dir.parent / 'diagnostics.json'
+        if diag_file.exists():
+            with open(diag_file, 'r') as f:
+                diag_data = json.load(f)
+                kernel_T = diag_data.get('kernel_T', 3000)
+    except Exception:
+        pass
+
+    plt.scatter([0], [kernel_T], marker='v', color='orange', s=100, label=f'Kernel T: {kernel_T:.0f}K', zorder=10)
+    plt.annotate(f'Kernel: {kernel_T:.0f} K',
+                xy=(0, kernel_T),
+                xytext=(0.02, kernel_T),
+                textcoords='data',
+                fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.3", fc="yellow", ec="none", alpha=0.7),
+                arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0"))
+
     plt.xlabel('z (m)')
     plt.ylabel('Temperature (K)')
     plt.title('Temperature vs z')
-    plt.grid(True, alpha=0.3)
     plt.legend()
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(out_dir / 'T_vs_z.png', dpi=300)
     plt.close()
@@ -65,6 +96,24 @@ def plot_species(df: pd.DataFrame, out_dir: Path):
     plt.figure(figsize=(10, 6))
     for c in present:
         plt.plot(z, 100.0 * df[c], label=c)
+
+    # Add vertical line at z=0 to show the "jump"
+    plt.axvline(z.iloc[0], color='k', linestyle='-', alpha=0.3, linewidth=1)
+
+    # Add target composition markers
+    if 'case1' in str(out_dir).lower():
+        # Case 1 targets (dry basis)
+        plt.axhline(y=48.27, color='red', linestyle='--', alpha=0.7, label='H2 Target: 48.27%')
+        plt.axhline(y=23.79, color='blue', linestyle='--', alpha=0.7, label='CO Target: 23.79%')
+        plt.axhline(y=4.19, color='green', linestyle='--', alpha=0.7, label='CO2 Target: 4.19%')
+        plt.axhline(y=3.76, color='orange', linestyle='--', alpha=0.7, label='CH4 Target: 3.76%')
+    elif 'case4' in str(out_dir).lower():
+        # Case 4 targets (dry basis)
+        plt.axhline(y=48.06, color='red', linestyle='--', alpha=0.7, label='H2 Target: 48.06%')
+        plt.axhline(y=25.61, color='blue', linestyle='--', alpha=0.7, label='CO Target: 25.61%')
+        plt.axhline(y=3.89, color='green', linestyle='--', alpha=0.7, label='CO2 Target: 3.89%')
+        plt.axhline(y=0.06, color='orange', linestyle='--', alpha=0.7, label='CH4 Target: 0.06%')
+
     plt.xlabel('z (m)')
     plt.ylabel('Mole fraction (%)')
     plt.title('Species vs z')
@@ -113,6 +162,10 @@ def plot_species_vs_time(df: pd.DataFrame, out_dir: Path):
     plt.figure(figsize=(10, 6))
     for c in present:
         plt.plot(t, 100.0 * df[c], label=c)
+
+    # Add vertical line at t=0 to show the "jump"
+    plt.axvline(t.iloc[0], color='k', linestyle='-', alpha=0.3, linewidth=1)
+
     plt.xlabel('Residence time (s)')
     plt.ylabel('Mole fraction (%)')
     plt.title('Species vs residence time')
@@ -131,6 +184,27 @@ def plot_velocity_pressure(df: pd.DataFrame, out_dir: Path):
     # Velocity
     if safe_col(df, 'u_m_s'):
         plt.plot(z, df['u_m_s'], label='u (m/s)', color='tab:blue')
+
+        # Add jet velocity annotation at z=0
+        if len(z) > 0:
+            jet_vel = df['u_m_s'].iloc[0]  # First value at inlet
+            # Determine case-specific jet velocity annotation
+            case_text = ""
+            if 'case1' in str(out_dir).lower():
+                case_text = "Case 1"
+            elif 'case4' in str(out_dir).lower():
+                case_text = "Case 4"
+
+            if case_text:
+                plt.scatter([0], [jet_vel], marker='o', color='red', s=50, label=f'Jet velocity: {jet_vel:.1f} m/s', zorder=10)
+                plt.annotate(f'Jet: {jet_vel:.1f} m/s',
+                            xy=(0, jet_vel),
+                            xytext=(0.02, jet_vel),
+                            textcoords='data',
+                            fontsize=10,
+                            bbox=dict(boxstyle="round,pad=0.3", fc="yellow", ec="none", alpha=0.7),
+                            arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0"))
+
     # Pressure (prefer p -> Pa)
     if safe_col(df, 'p'):
         pbar = df['p'] / 1e5

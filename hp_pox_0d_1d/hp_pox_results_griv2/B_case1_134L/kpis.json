@@ -1,0 +1,14 @@
+{
+  "case": "B_case1_134L",
+  "psr_converged": false,
+  "psr_T_out_K": 1300.0,
+  "T_ad_K": 0.0,
+  "dry_out": {
+    "H2": 0.0,
+    "CO": 0.0,
+    "CO2": 0.0,
+    "CH4": 0.0
+  },
+  "H2_CO_ratio": 0.0,
+  "T_out_K": 0.0
+}

@@ -1,0 +1,12 @@
+{
+  "T_out": 880.3756819148746,
+  "Q_burner": 36360.0,
+  "Q_chem": 0.0,
+  "residual": 0.0,
+  "converged": false,
+  "steps": 1,
+  "branch_status": "COLD",
+  "kernel_T": 2936.336537979377,
+  "kernel_H2": 0.3920436296412084,
+  "kernel_CO": 1.1060477948118295
+}

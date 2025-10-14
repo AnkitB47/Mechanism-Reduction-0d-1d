@@ -1,0 +1,7 @@
+{
+  "mechanism_in": "D:\\Thesis\\Master_Thesis\\hp_pox_0d_1d\\gri30.yaml",
+  "mechanism_out": "D:\\Thesis\\Master_Thesis\\hp_pox_0d_1d\\mechanisms_reduced\\gri30_reduced_v2.yaml",
+  "total_rxns": 325,
+  "kept_rxns": 291,
+  "rxn_reduction_pct": 10.461538461538467
+}

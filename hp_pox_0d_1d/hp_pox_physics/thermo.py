@@ -303,7 +303,8 @@ class GasState:
     def copy(self):
         """Create a copy of this gas state."""
         # Create new gas state with same properties
-        new_gas = ct.Solution(self.gas.name)
+        # Use the original mechanism file path instead of gas.name
+        new_gas = ct.Solution(self.gas.source)
         new_gas.TPY = self.gas.T, self.gas.P, self.gas.Y
         return GasState(new_gas, self.temperature, self.pressure, self.mass_fractions)
     

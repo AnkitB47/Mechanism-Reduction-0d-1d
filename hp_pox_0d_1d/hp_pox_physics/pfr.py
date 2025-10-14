@@ -3,30 +3,37 @@ Plug Flow Reactor (PFR) with proper energy units and chemistry control.
 Implements molar-based energy source calculation and adaptive stepping.
 """
 
+import os as _os
 import numpy as np
 import cantera as ct
 from typing import Dict, Any, Tuple, Optional
 from .thermo import ThermoManager, GasState, sanitize_TY, T_MIN, T_MAX, Y_FLOOR, sanitize_state, finite_or_backtrack, DT_MIN, DT_GROWTH, DT_SHRINK, REL_DY_MAX, clamp_state, is_finite_state
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class PFR:
     """Plug Flow Reactor with proper energy balance and chemistry control."""
     
-    def __init__(self, length_m: float, diameter_m: float, thermo: ThermoManager):
+    def __init__(self, length_m: float, diameter_m: float, thermo: ThermoManager, case_id: str = None):
         """Initialize PFR.
-        
+
         Args:
             length_m: Reactor length (m)
             diameter_m: Reactor diameter (m)
             thermo: Thermodynamics manager
+            case_id: Case identifier for optional geometric spacing
         """
         self.length_m = length_m
         self.diameter_m = diameter_m
         self.area_m2 = np.pi * (diameter_m / 2)**2
         self.thermo = thermo
+        self.case_id = case_id
     
     def solve_pfr_operator_split(self, inlet_state: GasState, m_dot: float, P: float,
-                                q_wall_per_m: float, chemistry_on: bool = True, Y_inlet: np.ndarray = None) -> Dict[str, Any]:
+                                q_wall_per_m: float, chemistry_on: bool = True, Y_inlet: np.ndarray = None,
+                                output_dir: str = None) -> Dict[str, Any]:
         # [ROBUST] Store parameters as instance variables
         self.m_dot = m_dot
         self.q_wall_per_m = q_wall_per_m
@@ -47,9 +54,13 @@ class PFR:
         print(f"  m_dot={m_dot:.3f}kg/s, q_wall={q_wall_per_m:.1f}W/m")
         print(f"  Chemistry: {'ON' if chemistry_on else 'OFF'}")
         
-        # Create spatial grid with adaptive stepping
+        # Create spatial grid with adaptive stepping (env override for fast mode)
         base_dz = 0.001  # m
-        n_cells = int(self.length_m / base_dz) + 1
+        env_fast = _os.getenv('HP_POX_FAST_CELLS', '')
+        if env_fast.isdigit() and int(env_fast) > 1:
+            n_cells = int(env_fast)
+        else:
+            n_cells = int(self.length_m / base_dz) + 1
         z = np.linspace(0, self.length_m, n_cells)
         dz = z[1] - z[0]
         
@@ -89,7 +100,8 @@ class PFR:
             Y_current = Y_current.flatten()
         
         # Debug: print shape
-        print(f"DEBUG: Y_current shape: {Y_current.shape}, expected: {self.thermo.n_species}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Y_current shape: %s expected: %d", Y_current.shape, self.thermo.n_species)
         if len(Y_current) != self.thermo.n_species:
             print(f"ERROR: Y_current length {len(Y_current)} != n_species {self.thermo.n_species}")
             # Use inlet state as fallback
@@ -105,7 +117,7 @@ class PFR:
             current_dz = z[i+1] - z[i]
             
             # Step 1: Energy/flow predictor (no chemistry)
-            print(f"DEBUG: Y_current shape before predictor: {Y_current.shape}")
+            
             T_pred, rho_pred, u_pred = self._energy_flow_predictor(
                 T[i], P, Y_current, u[i], current_dz
             )
@@ -249,9 +261,12 @@ class PFR:
         
         # Save unified data if available
         if hasattr(self, 'unified_data') and self.unified_data:
-            import os
-            os.makedirs("outputs/pfr_run", exist_ok=True)
-            self.save_unified_csv("outputs/pfr_run/unified_profile.csv")
+            if output_dir:
+                _os.makedirs(output_dir, exist_ok=True)
+                self.save_unified_csv(f"{output_dir}/unified_profile.csv")
+            else:
+                _os.makedirs("outputs/pfr_run", exist_ok=True)
+                self.save_unified_csv("outputs/pfr_run/unified_profile.csv")
         
         return results
 
@@ -514,7 +529,19 @@ class PFR:
         # Laptop PFR grid: 300–500 cells chemistry-ON, then optional ×2 refinement after convergence
         base_dz = 0.001  # m
         n_cells = min(max(int(self.length_m / base_dz), 300), 500)
-        z = np.linspace(0, self.length_m, n_cells)
+
+        # Optional geometric spacing for Case-4 (20% of cells in first 10 cm)
+        if hasattr(self, 'case_id') and 'case4' in self.case_id.lower():
+            print("  Using geometric grid spacing for Case-4")
+            # Create geometric spacing: more points near inlet
+            n_first = max(1, int(0.2 * n_cells))  # 20% of cells in first 10 cm
+            z_first = np.geomspace(1e-5, 0.1, n_first)  # geometric spacing from 10μm to 10cm
+            n_rest = n_cells - n_first + 1  # +1 to include the endpoint
+            z_rest = np.linspace(0.1, self.length_m, n_rest)
+            z = np.unique(np.concatenate([z_first[:-1], z_rest]))  # Remove duplicate at 0.1m
+        else:
+            z = np.linspace(0, self.length_m, n_cells)
+
         dz = z[1] - z[0]
         
         print(f"  PFR grid: {n_cells} cells, dz={dz:.4f}m (laptop-optimized)")

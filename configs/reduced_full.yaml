@@ -1,0 +1,134 @@
+geometry:
+  caseA:
+    psr:
+      volume_L: 16.136
+      T_init_K: 2000
+    pfr:
+      length_m: 2.32
+      diameter_m: 0.49
+    total_volume_litres_approx: 450
+  caseB:
+    psr:
+      volume_L: 16.136
+      T_init_K: 2000
+    pfr:
+      length_m: 1.0
+      diameter_m: 0.387
+    total_volume_litres_approx: 134
+heat_loss:
+  case1:
+    burner_kW: 34.29
+    wall_kW: 18.5
+  case4:
+    burner_kW: 36.36
+    wall_kW: 22.92
+inlet:
+  case1:
+    pressure_barg: 50
+    target_T_out_C: 1201
+    primary_steam:
+      mass_kg_per_h: 78.02
+      T_C: 289.6
+      comp:
+        H2O: 1.0
+    secondary_steam:
+      mass_kg_per_h: 23.15
+      T_C: 240.2
+      comp:
+        H2O: 1.0
+    oxygen:
+      mass_kg_per_h: 265.37
+      T_C: 240.2
+      comp:
+        O2: 1.0
+    nitrogen_optisox:
+      mass_kg_per_h: 4.72
+      T_C: 25.0
+      comp:
+        N2: 1.0
+    natural_gas:
+      mass_kg_per_h: 224.07
+      T_C: 359.1
+      composition_volpct:
+        CH4: 95.97
+        CO2: 0.34
+        C2H6: 2.26
+        C3H8: 0.46
+        nC4H10: 0.05
+        iC4H10: 0.06
+        N2: 0.86
+  case4:
+    pressure_barg: 50
+    target_T_out_C: 1401
+    primary_steam:
+      mass_kg_per_h: 64.39
+      T_C: 277.5
+      comp:
+        H2O: 1.0
+    secondary_steam:
+      mass_kg_per_h: 22.77
+      T_C: 239.9
+      comp:
+        H2O: 1.0
+    oxygen:
+      mass_kg_per_h: 280.25
+      T_C: 240.2
+      comp:
+        O2: 1.0
+    nitrogen_optisox:
+      mass_kg_per_h: 4.79
+      T_C: 25.0
+      comp:
+        N2: 1.0
+    natural_gas:
+      mass_kg_per_h: 195.9
+      T_C: 355.2
+      composition_volpct:
+        CH4: 96.2
+        CO2: 0.26
+        C2H6: 2.09
+        C3H8: 0.47
+        nC4H10: 0.05
+        iC4H10: 0.06
+        N2: 0.87
+targets_dry_basis_volpct:
+  case1:
+    H2: 48.27
+    N2: 0.65
+    CO: 23.79
+    CO2: 4.19
+    H2O: 19.33
+    CH4: 3.76
+  case4:
+    H2: 48.06
+    N2: 0.67
+    CO: 25.61
+    CO2: 3.89
+    H2O: 21.71
+    CH4: 0.06
+runs:
+- label: A_case1_richter
+  geometry: caseA
+  inlet: case1
+  heat_loss: case1
+- label: A_case4_richter
+  geometry: caseA
+  inlet: case4
+  heat_loss: case4
+- label: B_case1_134L
+  geometry: caseB
+  inlet: case1
+  heat_loss: case1
+- label: B_case4_134L
+  geometry: caseB
+  inlet: case4
+  heat_loss: case4
+mechanism: /mnt/d/Thesis/Master_Thesis/runs/20251013_234429/reduced.yaml
+cases_root: /mnt/d/Thesis/Master_Thesis/hp_pox_0d_1d/hp_pox_results_griv2
+output_root: /mnt/d/Thesis/Master_Thesis/hp_pox_0d_1d/hp_pox_results_griv2
+validation:
+  h2co_target: 2.0
+  h2co_rel_tol: 0.05
+  max_abs_dT_K: 50
+  require_hot_branch: true
+  require_psr_converged: true

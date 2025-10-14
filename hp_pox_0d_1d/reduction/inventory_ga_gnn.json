@@ -1,0 +1,139 @@
+{
+  "scanned_root": "D:/Thesis/Master_Thesis",
+  "modules": [
+    {
+      "path": "metaheuristics/ga.py",
+      "classes": [
+        {
+          "name": "GAOptions",
+          "type": "dataclass",
+          "fields": [
+            "population_size:int=20",
+            "generations:int=10",
+            "crossover_rate:float=0.8",
+            "mutation_rate:float=0.1",
+            "min_species:int=1",
+            "max_species:int|None=None"
+          ]
+        }
+      ],
+      "functions": [
+        {"name": "initialize_population(pop_size:int, genome_length:int, seeds:Sequence[np.ndarray]|None=None) -> np.ndarray"},
+        {"name": "fitness(population:np.ndarray, eval_fn:Callable[[np.ndarray], tuple|float]) -> Tuple[np.ndarray, List[tuple]]"},
+        {"name": "selection(population:np.ndarray, scores:np.ndarray) -> np.ndarray"},
+        {"name": "crossover(population:np.ndarray, rate:float, mask:np.ndarray|None=None) -> np.ndarray"},
+        {"name": "mutate(population:np.ndarray, rate:float, mask:np.ndarray|None=None) -> np.ndarray"},
+        {"name": "run_ga(genome_length:int, eval_fn:Callable[[np.ndarray], float], options:GAOptions=GAOptions(), return_history:bool=False, initial_population:np.ndarray|None=None, return_debug:bool=False, fixed_indices:Sequence[int]|None=None, mask:np.ndarray|None=None) -> ..."}
+      ],
+      "doc": "Simple GA on binary genomes with selection/crossover/mutation and optional bounds/fixed bits.",
+      "dependencies": ["numpy"]
+    },
+    {
+      "path": "reduction/ga_gnn_pipeline.py",
+      "classes": [
+        {"name":"GAParameters","type":"dataclass","fields":["population_size:int=50","generations:int=100","mutation_rate:float=0.1","crossover_rate:float=0.8","elite_size:int=5","tournament_size:int=5"]},
+        {"name":"GNNParameters","type":"dataclass","fields":["hidden_dim:int=64","num_layers:int=3","learning_rate:float=0.001","epochs:int=100","batch_size:int=32"]},
+        {"name":"ReductionTarget","type":"dataclass","fields":["max_species:int","max_error_pct:float","validation_cases:List[str]","priority_species:List[str]|None"]},
+        {"name":"Individual","type":"dataclass","fields":["species_mask:np.ndarray","fitness:float=0.0","error_metrics:Dict[str,float]|None"],"post_init":"ensure error_metrics dict"},
+        {"name":"GAGNNPipeline","methods":[
+          "run_reduction(output_dir:str='results')->Dict",
+          "_initialize_population()->List[Individual]",
+          "_evaluate_population(population:List[Individual], generation:int)->None",
+          "_create_reduced_mechanism(individual:Individual)->Mechanism",
+          "_evaluate_fitness(reduced_mechanism:Mechanism)->Tuple[float,Dict]",
+          "_calculate_fitness(validation_results:Dict, reduced_mechanism:Mechanism)->float",
+          "_calculate_error_metrics(validation_results:Dict)->Dict[str,float]",
+          "_check_convergence()->bool",
+          "_create_next_generation(population:List[Individual])->List[Individual]",
+          "_tournament_selection(population:List[Individual])->Individual",
+          "_crossover(parent1:Individual,parent2:Individual)->Tuple[Individual,Individual]",
+          "_mutate(individual:Individual)->Individual",
+          "_validate_reduced_mechanism(reduced_mechanism:Mechanism)->Dict",
+          "_save_results(best_individual, reduced_mechanism, validation_results, output_dir:str)->None",
+          "_generate_reduction_plots(output_path:Path)->None",
+          "_plot_species_importance(output_path:Path)->None"
+        ]}
+      ],
+      "doc": "End-to-end GA+GNN pipeline (species-mask based) invoking Mechanism wrapper and HP_POXValidator.",
+      "dependencies": ["numpy","pandas","matplotlib","yaml","random","copy","cantera","pathlib"]
+    },
+    {
+      "path": "gnn/models.py",
+      "classes": [
+        {"name":"SpeciesGCN","base":"torch.nn.Module","methods":["forward(x,edge_index)->Tensor"]}
+      ],
+      "functions": [
+        {"name":"graph_to_data(G:nx.DiGraph, solution:Solution)->torch_geometric.data.Data"},
+        {"name":"train_gnn(G:nx.DiGraph, solution:Solution, labels:dict[str,float]|None=None, epochs:int=200)->SpeciesGCN"},
+        {"name":"predict_scores(model:nn.Module, G:nx.DiGraph, solution:ct.Solution, save_path:str='gnn_scores.csv')->dict"}
+      ],
+      "doc": "GCN-based species scoring with torch_geometric; outputs per-species scores and CSV.",
+      "dependencies": ["torch","torch_geometric","networkx","cantera","numpy"]
+    },
+    {
+      "path": "graph/construction.py",
+      "functions": [
+        {"name":"build_species_graph(solution:Solution, weights:Dict[str,float]|None=None, node_scores:Dict[str,float]|None=None)->nx.DiGraph"},
+        {"name":"save_graphml(G:nx.DiGraph, path:str)->None"}
+      ],
+      "doc": "Build directed species graph with edges per reaction linking reactants to products; stores reaction index on edges.",
+      "dependencies": ["networkx","cantera"]
+    },
+    {
+      "path": "mechanism/loader.py",
+      "classes": [
+        {"name":"Mechanism","methods":[
+          "species_names(self)->List[str]",
+          "molecular_weights(self)->Dict[str,float]",
+          "reactions(self)->List[ct.Reaction]",
+          "remove_species(self, remove:list[str])->None",
+          "save(self, out_path:str)->None"
+        ]}
+      ],
+      "doc": "Wrapper around ct.Solution with species removal and YAML save via Species.save_yaml.",
+      "dependencies": ["cantera"]
+    },
+    {
+      "path": "reactor/plug_flow.py",
+      "classes": [
+        {"name":"ReactorGeometry","type":"dataclass"},
+        {"name":"HeatTransferConfig","type":"dataclass"},
+        {"name":"InletConditions","type":"dataclass"},
+        {"name":"PFRResult","type":"dataclass"},
+        {"name":"PlugFlowReactor","methods":[
+          "set_inlet_conditions(inlet:InletConditions)->None",
+          "solve(max_iterations:int=1000, tolerance:float=1e-6)->PFRResult"
+        ]}
+      ],
+      "doc": "Standalone 1-D PFR used in legacy validation; not used directly in hp_pox_0d_1d adapters.",
+      "dependencies": ["cantera","numpy","yaml"]
+    }
+  ],
+  "notable_external_refs": [
+    "validation.hp_pox_validator.HP_POXValidator (present under validation/)",
+    "surrogates/ (possible additional models)",
+    "torch, torch_geometric, networkx required for GNN"
+  ],
+  "io_contracts": {
+    "gnn.train_gnn": {
+      "inputs": ["nx.DiGraph species graph","ct.Solution mechanism","labels optional dict species->float"],
+      "outputs": ["trained torch model"],
+      "files": []
+    },
+    "gnn.predict_scores": {
+      "inputs": ["trained model","graph","ct.Solution"],
+      "outputs": ["dict species->score in [0,1]"],
+      "files": ["CSV with columns [species,score]"]
+    },
+    "metaheuristics.run_ga": {
+      "inputs": ["genome_length:int (binary)","eval_fn: mask->score"],
+      "outputs": ["best genome","optionally score history"],
+      "files": []
+    },
+    "mechanism.Mechanism": {
+      "inputs": ["mechanism YAML path"],
+      "outputs": ["ct.Solution in-memory, save(out_path) writes YAML"],
+      "files": ["reduced_mechanism.yaml"]
+    }
+  }
+}

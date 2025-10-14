@@ -1,0 +1,42 @@
+[
+  {
+    "case": "A_case1_richter",
+    "psr_converged": false,
+    "psr_t_out": 0.0,
+    "psr_branch": "FAILED",
+    "ch4_slip_pct": 0.0,
+    "h2_co_ratio": 0.0,
+    "t_out_avg": 0.0,
+    "error": "'charmap' codec can't encode characters in position 0-1: character maps to <undefined>"
+  },
+  {
+    "case": "A_case4_richter",
+    "psr_converged": false,
+    "psr_t_out": 0.0,
+    "psr_branch": "FAILED",
+    "ch4_slip_pct": 0.0,
+    "h2_co_ratio": 0.0,
+    "t_out_avg": 0.0,
+    "error": "'charmap' codec can't encode characters in position 0-1: character maps to <undefined>"
+  },
+  {
+    "case": "B_case1_134L",
+    "psr_converged": false,
+    "psr_t_out": 0.0,
+    "psr_branch": "FAILED",
+    "ch4_slip_pct": 0.0,
+    "h2_co_ratio": 0.0,
+    "t_out_avg": 0.0,
+    "error": "'charmap' codec can't encode characters in position 0-1: character maps to <undefined>"
+  },
+  {
+    "case": "B_case4_134L",
+    "psr_converged": false,
+    "psr_t_out": 0.0,
+    "psr_branch": "FAILED",
+    "ch4_slip_pct": 0.0,
+    "h2_co_ratio": 0.0,
+    "t_out_avg": 0.0,
+    "error": "'charmap' codec can't encode characters in position 0-1: character maps to <undefined>"
+  }
+]

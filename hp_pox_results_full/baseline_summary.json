@@ -1,0 +1,40 @@
+[
+  {
+    "case": "A_case1_richter",
+    "psr_converged": true,
+    "psr_t_out": 1879.0316645778728,
+    "psr_branch": "HOT",
+    "ch4_slip_pct": 0.0,
+    "h2_co_ratio": 1.9249906855539687,
+    "t_out_avg": 0.0
+  },
+  {
+    "case": "A_case1_richter",
+    "psr_converged": false,
+    "psr_t_out": 0.0,
+    "psr_branch": "FAILED",
+    "ch4_slip_pct": 0.0,
+    "h2_co_ratio": 0.0,
+    "t_out_avg": 0.0,
+    "error": "[Errno 2] No such file or directory: 'hp_pox_results_full\\\\A_case1_richter\\\\axial_profiles.csv'"
+  },
+  {
+    "case": "A_case4_richter",
+    "psr_converged": false,
+    "psr_t_out": 1000.2689260527318,
+    "psr_branch": "COLD",
+    "ch4_slip_pct": 0.0,
+    "h2_co_ratio": 1.693029709566037,
+    "t_out_avg": 0.0
+  },
+  {
+    "case": "A_case4_richter",
+    "psr_converged": false,
+    "psr_t_out": 0.0,
+    "psr_branch": "FAILED",
+    "ch4_slip_pct": 0.0,
+    "h2_co_ratio": 0.0,
+    "t_out_avg": 0.0,
+    "error": "[Errno 2] No such file or directory: 'hp_pox_results_full\\\\A_case4_richter\\\\axial_profiles.csv'"
+  }
+]

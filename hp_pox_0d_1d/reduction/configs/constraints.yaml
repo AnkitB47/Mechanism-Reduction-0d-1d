@@ -1,0 +1,31 @@
+mandatory_species:
+  - H2
+  - CO
+  - CO2
+  - CH4
+  - H2O
+  - O2
+  - N2
+kpi_tolerances:
+  h2_co_rel_pct: 5.0
+  ch4_slip_abs_pct: 1.0
+  t_out_abs_K: 40.0
+profile_rmse_rel_range_pct:
+  T: 15.0
+  X_H2: 15.0
+  X_CO: 15.0
+ga_hyperparams:
+  target_species: 30
+  species_band:
+    - 28
+    - 32
+  max_generations: 120
+  pop_size: 48
+  elite_k: 6
+  mutation_rate: 0.12
+  crossover_rate: 0.9
+  stagnation_patience: 18
+gnn_hyperparams:
+  epochs: 120
+  patience: 20
+  lr: 3.0e-4
