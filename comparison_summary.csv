@@ -1,0 +1,5 @@
+Case,Mechanism,T_out_C,H2_pct,CO_pct,CO2_pct,CH4_pct,H2_CO_ratio,n_species,Status
+A_case1_richter,gri30.yaml,1362.1,62.6,32.6,4.0,0.0,1.92,53,FAIL
+A_case4_richter,gri30.yaml,1678.0,59.6,34.9,4.5,0.0,1.71,53,FAIL
+A_case1_richter,gri30_reduced_v2.yaml,1362.3,62.6,32.6,4.0,0.0,1.92,53,FAIL
+A_case4_richter,gri30_reduced_v2.yaml,1678.0,59.6,34.9,4.5,0.0,1.71,53,FAIL

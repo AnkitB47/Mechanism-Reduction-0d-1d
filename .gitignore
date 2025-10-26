@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.log
+results/
+.venv/
+venv/
+env/
+pytest.ini

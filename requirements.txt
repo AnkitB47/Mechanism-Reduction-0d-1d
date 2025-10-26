@@ -1,0 +1,9 @@
+cantera
+numpy
+scipy
+pandas
+matplotlib
+networkx
+torch
+torch_geometric
+pyyaml
