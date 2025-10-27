@@ -12,3 +12,42 @@ pytest.ini
 # === Generated result PDFs (keep locally, don't track) ===
 /results_*/*.pdf
 /results_*/**/*.pdf
+# --- added by cleanup ---
+# archives & binaries
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.pdf
+
+# heavy intermediates
+*.parquet
+*.npy
+*.npz
+*.pt
+*.ckpt
+*.h5
+*.pkl
+*.log~
+*.tmp
+*.bak
+*.backup
+
+# caches & envs
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env/
+.ipynb_checkpoints/
+
+# GA dumps / runs
+*/ga_runs/*
+*/runs/*/gen_*/
+reduction_test_output/intermediate/
+reduction/work_gri/*.parquet
+
+# raw data sandboxes
+data/raw/
+# --- end cleanup block ---
