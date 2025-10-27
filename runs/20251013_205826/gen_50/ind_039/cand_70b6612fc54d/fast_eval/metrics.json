@@ -1,11 +1,3 @@
-{
-  "H2_CO_out_avg": NaN,
-  "CH4_slip_pct_avg": NaN,
-  "T_out_avg": NaN,
-  "profile_rmse": {},
-  "per_case": {},
-  "feasibility_penalty": 0.0,
-  "mech_yaml": "/mnt/d/Thesis/Master_Thesis/runs/20251013_205826/gen_50/ind_039/cand_70b6612fc54d/candidate.yaml",
-  "n_species": 28,
-  "n_reactions": 94
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:58093396aa94d0a0512e88716ba93a410f00d9cd413d2c70edf45d2597c9d65f
+size 298

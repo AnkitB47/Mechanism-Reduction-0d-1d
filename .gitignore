@@ -6,3 +6,6 @@ results/
 venv/
 env/
 pytest.ini
+
+# Ignore archives
+*.zip

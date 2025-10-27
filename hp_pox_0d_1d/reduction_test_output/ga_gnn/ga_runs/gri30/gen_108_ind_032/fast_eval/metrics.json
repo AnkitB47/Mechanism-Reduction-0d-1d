@@ -1,7 +1,3 @@
-{
-  "H2_CO_out_avg": NaN,
-  "CH4_slip_pct_avg": NaN,
-  "T_out_avg": NaN,
-  "profile_rmse": {},
-  "per_case": {}
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:a2766c4fc60c9b8e3c119ead9d50f175733afd373b2a24989c167132c6f5b9b7
+size 119

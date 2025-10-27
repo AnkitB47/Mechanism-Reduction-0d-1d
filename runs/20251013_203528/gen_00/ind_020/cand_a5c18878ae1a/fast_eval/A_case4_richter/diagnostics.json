@@ -1,12 +1,3 @@
-{
-  "T_out": 860.294978978903,
-  "Q_burner": 36360.0,
-  "Q_chem": 0.0,
-  "residual": 0.0,
-  "converged": false,
-  "steps": 1,
-  "branch_status": "COLD",
-  "kernel_T": 2936.332453824824,
-  "kernel_H2": 0.3872400176920412,
-  "kernel_CO": 1.0912268851812559
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:0d81bf1f005d7ff89c428c70a4b4edd293649cec7f9f9fe694586e74b8488ac2
+size 256

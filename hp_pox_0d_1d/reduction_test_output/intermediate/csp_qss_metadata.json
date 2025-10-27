@@ -1,5 +1,3 @@
-{
-  "species_count": 13,
-  "reactions_count": 32,
-  "algorithm": "csp_qss"
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:2f113bed87b5e1ae36d38afbc52296c302b5319fbdff295e542d5d30cc4f9670
+size 80
