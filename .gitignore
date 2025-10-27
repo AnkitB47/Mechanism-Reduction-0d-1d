@@ -9,3 +9,6 @@ pytest.ini
 
 # Ignore archives
 *.zip
+# === Generated result PDFs (keep locally, don't track) ===
+/results_*/*.pdf
+/results_*/**/*.pdf
